@@ -464,14 +464,24 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
                     const displayLink = lead.platformLink || lead.profileLink || '';
                     const resolvedHref = getPlatformLink(displayLink, lead.platform);
                     const isMail = resolvedHref.startsWith('mailto:');
+                    const leadCity =
+                      lead.city ||
+                      lead.location ||
+                      lead.rawDetails?.city ||
+                      lead.rawDetails?.location ||
+                      lead.rawDetails?.City ||
+                      lead.rawDetails?.Location ||
+                      '';
                     const dupCheck = findNormalizedDuplicateMatches(
                       {
                         name: lead.name,
+                        city: leadCity,
                         link: displayLink,
                         platformLink: displayLink,
                         email: lead.email,
                         facebook: lead.facebook,
                         instagram: lead.instagram,
+                        rawDetails: lead.rawDetails,
                       },
                       {
                         activeCombined: channelLeads?.combined,

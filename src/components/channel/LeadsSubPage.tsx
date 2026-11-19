@@ -1052,6 +1052,7 @@ export function LeadsSubPage({
     const normDup = findNormalizedDuplicateMatches(
       {
         name: businessName,
+        city: trimmedCity,
         link: rawPrimaryLink,
         platformLink: rawPrimaryLink,
         email: emailField,

@@ -1,8 +1,8 @@
 import { InboxLead, MultiChannelType, ChannelLead } from '../types';
-import { getNextLeadId, saveChannelLeads, loadChannelLeads, findDuplicateLead, hasSocialWarmupLink } from './channelStorage';
+import { getNextLeadId, saveChannelLeads, loadChannelLeads, hasSocialWarmupLink } from './channelStorage';
 import { getNextAvailableScheduleDate } from './cadenceEngine';
 import { getStrictVoiceTypeForId, recalculateAllVoiceTypes } from './voiceTypeEngine';
-import { findNormalizedDuplicateMatches, getHistoricalSentDateForName } from './leadLifecycle';
+import { extractInstagramHandle, findNormalizedDuplicateMatches } from './leadLifecycle';
 
 export const INBOX_STORAGE_KEY = 'outreach_engine_lead_inbox_v1';
 
@@ -227,6 +227,38 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       (rawPlatformLink.includes('@') && !rawPlatformLink.includes('facebook.com') && !rawPlatformLink.includes('instagram.com') ? rawPlatformLink : '')
     ).trim();
 
+    const rawIg = String(
+      it.instagram ||
+      it.Instagram ||
+      it.instagramUrl ||
+      it.instagram_url ||
+      it.instagramLink ||
+      it.instagram_link ||
+      it.instagramHandle ||
+      it.instagram_handle ||
+      it.ig ||
+      it.igHandle ||
+      it.ig_handle ||
+      it.socialLinks?.instagram ||
+      (extractInstagramHandle(rawPlatformLink) ? rawPlatformLink : '')
+    ).trim();
+
+    const rawCity = String(
+      it.city ||
+      it.City ||
+      it.location ||
+      it.Location ||
+      it.market ||
+      it.Market ||
+      it.area ||
+      it.Area ||
+      it.lead?.city ||
+      it.lead?.location ||
+      it.details?.city ||
+      it.details?.location ||
+      ''
+    ).trim();
+
     const prompt = String(
       it.prompt ||
       it.customPitch ||
@@ -245,8 +277,11 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       rawPlatform,
       profileLink: rawPlatformLink,
       platformLink: rawPlatformLink,
+      instagram: rawIg || undefined,
       facebook: rawFb || undefined,
       email: rawEmail || undefined,
+      city: rawCity || undefined,
+      location: rawCity || undefined,
       prompt,
       uploadedAt: nowIso,
       rawDetails: it,
@@ -300,15 +335,37 @@ export function acceptInboxLeadIntoCrm(
 
   const storedLink = rawPlatformLink;
 
-  // Normalized duplicate guard across link, active CRM, Backstage archive, and immutable dispatchLog
+  const leadCity =
+    (typeof lead.city === 'string' && lead.city.trim()) ||
+    (typeof lead.location === 'string' && lead.location.trim()) ||
+    (typeof lead.rawDetails?.city === 'string' && lead.rawDetails.city.trim()) ||
+    (typeof lead.rawDetails?.location === 'string' && lead.rawDetails.location.trim()) ||
+    (typeof lead.rawDetails?.City === 'string' && lead.rawDetails.City.trim()) ||
+    (typeof lead.rawDetails?.Location === 'string' && lead.rawDetails.Location.trim()) ||
+    '';
+
+  const extractedIg =
+    lead.instagram ||
+    lead.rawDetails?.instagram ||
+    lead.rawDetails?.Instagram ||
+    lead.rawDetails?.instagramUrl ||
+    lead.rawDetails?.instagram_url ||
+    lead.rawDetails?.instagramHandle ||
+    lead.rawDetails?.instagram_handle ||
+    lead.rawDetails?.socialLinks?.instagram ||
+    (extractInstagramHandle(rawPlatformLink) ? rawPlatformLink : undefined);
+
+  // Strict Duplicate Guard across active CRM, Backstage archive, and immutable dispatchLog
   const normalizedMatch = findNormalizedDuplicateMatches(
     {
       name: lead.name,
+      city: leadCity,
       link: storedLink,
       platformLink: storedLink,
       email: lead.email,
       facebook: lead.facebook,
-      instagram: lead.instagram,
+      instagram: extractedIg,
+      rawDetails: lead.rawDetails,
     },
     {
       activeCombined: combinedListForDup,
@@ -326,19 +383,6 @@ export function acceptInboxLeadIntoCrm(
         normalizedMatch.summaryReason ||
         `Matches existing or previously dispatched lead "${lead.name}"`,
     };
-  }
-
-  if (storedLink) {
-    const duplicate = findDuplicateLead(storedLink, currentLeads);
-    if (duplicate) {
-      return {
-        targetChannel,
-        newLead: duplicate,
-        updatedLeads: currentLeads,
-        isDuplicate: true,
-        duplicateReason: `Link already exists on ${duplicate.id} (${duplicate.name})`,
-      };
-    }
   }
 
   const { id, numericId } = getNextLeadId(targetChannel, currentLeads);
@@ -382,8 +426,10 @@ export function acceptInboxLeadIntoCrm(
     name: lead.name,
     link: storedLink,
     platformLink: storedLink,
+    instagram: extractedIg || undefined,
     facebook: extractedFb || undefined,
     email: extractedEmail || undefined,
+    city: leadCity || undefined,
     channel: targetChannel,
     voiceType: getStrictVoiceTypeForId(numericId, targetChannel),
     isVoiceTypeOverridden: false,
@@ -482,31 +528,45 @@ export function acceptAllInboxLeadsIntoCrm(
 
     const storedLink = rawPlatformLink;
 
+    const leadCity =
+      (typeof lead.city === 'string' && lead.city.trim()) ||
+      (typeof lead.location === 'string' && lead.location.trim()) ||
+      (typeof lead.rawDetails?.city === 'string' && lead.rawDetails.city.trim()) ||
+      (typeof lead.rawDetails?.location === 'string' && lead.rawDetails.location.trim()) ||
+      (typeof lead.rawDetails?.City === 'string' && lead.rawDetails.City.trim()) ||
+      (typeof lead.rawDetails?.Location === 'string' && lead.rawDetails.Location.trim()) ||
+      '';
+
+    const extractedIg =
+      lead.instagram ||
+      lead.rawDetails?.instagram ||
+      lead.rawDetails?.Instagram ||
+      lead.rawDetails?.instagramUrl ||
+      lead.rawDetails?.instagram_url ||
+      lead.rawDetails?.instagramHandle ||
+      lead.rawDetails?.instagram_handle ||
+      lead.rawDetails?.socialLinks?.instagram ||
+      (extractInstagramHandle(rawPlatformLink) ? rawPlatformLink : undefined);
+
     const normMatch = findNormalizedDuplicateMatches(
       {
         name: lead.name,
+        city: leadCity,
         link: storedLink,
         platformLink: storedLink,
         email: lead.email,
         facebook: lead.facebook,
-        instagram: lead.instagram,
+        instagram: extractedIg,
+        rawDetails: lead.rawDetails,
       },
       {
         activeCombined: combinedList,
         activeInstagram: instagramList,
       }
     );
-    if (normMatch.hasMatch || getHistoricalSentDateForName(lead.name)) {
+    if (normMatch.hasMatch) {
       duplicateCount++;
       continue;
-    }
-
-    if (storedLink) {
-      const duplicate = findDuplicateLead(storedLink, currentTargetList);
-      if (duplicate) {
-        duplicateCount++;
-        continue;
-      }
     }
 
     const { id, numericId } = getNextLeadId(targetChannel, currentTargetList);
@@ -546,8 +606,10 @@ export function acceptAllInboxLeadsIntoCrm(
       name: lead.name,
       link: storedLink,
       platformLink: storedLink,
+      instagram: extractedIg || undefined,
       facebook: extractedFb || undefined,
       email: extractedEmail || undefined,
+      city: leadCity || undefined,
       channel: targetChannel,
       voiceType: getStrictVoiceTypeForId(numericId, targetChannel),
       isVoiceTypeOverridden: false,

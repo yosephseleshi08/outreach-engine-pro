@@ -1,5 +1,6 @@
 import { Lead, RejectedLeadEntry } from '../types';
 import { parseBusinessFromUrl, isGenericPlaceholderName, isBarePlatformDomain } from './linkLeadParser';
+import { extractInstagramHandle } from './leadLifecycle';
 
 export const REJECTED_LINKS_STORAGE_KEY = 'outreach_engine_rejected_links_v1';
 
@@ -126,13 +127,13 @@ export function normalizeLeadUrl(rawUrl: string): string {
       return `google.com/maps${pathname.toLowerCase()}`;
     }
 
-    // 3. Instagram Normalization
+    // 3. Instagram Normalization (strips ?fbclid=..., /reels/, etc.)
     if (host.includes('instagram.com') || host === 'instagr.am') {
-      const parts = pathname.replace(/^\/+/, '').split('/').filter(Boolean);
-      if (parts.length > 0 && !['p', 'reel', 'stories', 'explore'].includes(parts[0])) {
-        return `instagram.com/${parts[0].toLowerCase()}`;
+      const igHandle = extractInstagramHandle(rawUrl);
+      if (igHandle) {
+        return `instagram.com/${igHandle}`;
       }
-      return `instagram.com${pathname.toLowerCase()}`;
+      return 'instagram.com';
     }
 
     // 4. Generic Websites
@@ -149,14 +150,11 @@ export function normalizeLeadUrl(rawUrl: string): string {
 }
 
 /**
- * Normalizes business names for fuzzy comparison (e.g. "Joe's Pizzeria & Grill" -> "joespizzeriagrill")
+ * Exact case-insensitive business name normalization (no fuzzy regex stripping).
  */
 export function normalizeBusinessName(name: string): string {
   if (!name) return '';
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
-    .trim();
+  return name.trim().toLowerCase();
 }
 
 /**
@@ -356,7 +354,8 @@ export interface LinkValidationResult {
 export function checkLeadUrlStatus(
   rawUrl: string,
   existingLeads: Lead[],
-  customName?: string
+  customName?: string,
+  customCity?: string
 ): LinkValidationResult {
   const trimmedUrl = rawUrl?.trim() || '';
   if (!trimmedUrl) {
@@ -375,7 +374,9 @@ export function checkLeadUrlStatus(
 
   const parsed = parseBusinessFromUrl(trimmedUrl, customName);
   const normalized = normalizeLeadUrl(trimmedUrl);
-  const cleanName = normalizeBusinessName(parsed.name);
+  const igHandle = extractInstagramHandle(trimmedUrl);
+  const cleanName = normalizeBusinessName(customName || parsed.name);
+  const cleanCity = normalizeBusinessName(customCity || parsed.city || '');
   const rejectedList = loadRejectedLeads();
 
   // If the user pasted a bare platform domain like https://facebook.com without a specific page,
@@ -387,25 +388,17 @@ export function checkLeadUrlStatus(
 
   if (!isBare) {
     matchedRejected = rejectedList.find((item) => {
+      const itemIgHandle = extractInstagramHandle(item.originalUrl || item.normalizedUrl || '');
+      if (igHandle && itemIgHandle) {
+        return igHandle === itemIgHandle;
+      }
       const itemNorm = item.normalizedUrl || normalizeLeadUrl(item.originalUrl || '');
-      // Exact normalized URL match - only for specific, non-bare URLs
       if (normalized && itemNorm && !isBarePlatformDomain(itemNorm) && itemNorm === normalized) {
         return true;
       }
-      // Matching original raw URL
       if (item.originalUrl && !isBarePlatformDomain(item.originalUrl)) {
         if (normalizeLeadUrl(item.originalUrl) === normalized) return true;
         if (item.originalUrl.trim().toLowerCase() === trimmedUrl.toLowerCase()) return true;
-      }
-      // Matching same platform and business name ONLY if BOTH are real non-generic names
-      if (
-        cleanName &&
-        !isGenericPlaceholderName(parsed.name) &&
-        !isGenericPlaceholderName(item.businessName) &&
-        item.platform === parsed.platform &&
-        normalizeBusinessName(item.businessName) === cleanName
-      ) {
-        return true;
       }
       return false;
     });
@@ -431,17 +424,22 @@ export function checkLeadUrlStatus(
   if (!isBare) {
     matchedDeadLead = existingLeads.find((l) => {
       if (l.status !== 'closed_dead') return false;
+      const lIgHandle = extractInstagramHandle(l.handle || l.profileUrl || l.website || '');
+      if (igHandle && lIgHandle) {
+        return igHandle === lIgHandle;
+      }
       const lNorm = normalizeLeadUrl(l.profileUrl || l.handle || l.website || '');
       if (normalized && lNorm && !isBarePlatformDomain(lNorm) && lNorm === normalized) {
         return true;
       }
-      // Match by business name ONLY if not a generic placeholder
       if (
+        !igHandle &&
         cleanName &&
-        !isGenericPlaceholderName(parsed.name) &&
+        cleanCity &&
+        !isGenericPlaceholderName(customName || parsed.name) &&
         !isGenericPlaceholderName(l.restaurantName) &&
         normalizeBusinessName(l.restaurantName) === cleanName &&
-        l.platform === parsed.platform
+        normalizeBusinessName(l.city || '') === cleanCity
       ) {
         return true;
       }
@@ -469,17 +467,22 @@ export function checkLeadUrlStatus(
   if (!isBare) {
     matchedActive = existingLeads.find((l) => {
       if (l.status === 'closed_dead') return false;
+      const lIgHandle = extractInstagramHandle(l.handle || l.profileUrl || l.website || '');
+      if (igHandle && lIgHandle) {
+        return igHandle === lIgHandle;
+      }
       const lNorm = normalizeLeadUrl(l.profileUrl || l.handle || l.website || '');
       if (normalized && lNorm && !isBarePlatformDomain(lNorm) && lNorm === normalized) {
         return true;
       }
-      // Match by business name ONLY if not a generic placeholder
       if (
+        !igHandle &&
         cleanName &&
-        !isGenericPlaceholderName(parsed.name) &&
+        cleanCity &&
+        !isGenericPlaceholderName(customName || parsed.name) &&
         !isGenericPlaceholderName(l.restaurantName) &&
         normalizeBusinessName(l.restaurantName) === cleanName &&
-        l.platform === parsed.platform
+        normalizeBusinessName(l.city || '') === cleanCity
       ) {
         return true;
       }

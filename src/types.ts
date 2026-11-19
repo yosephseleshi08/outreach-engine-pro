@@ -326,6 +326,8 @@ export interface InboxLead {
   instagram?: string;
   facebook?: string;
   email?: string;
+  city?: string;
+  location?: string;
   prompt: string;
   uploadedAt: string;
   rawDetails?: Record<string, any>;
@@ -477,6 +479,9 @@ export interface DispatchLogEntry {
   localDate: string; // 'YYYY-MM-DD' strictly in local calendar timezone
   timestamp: string; // ISO string
   source: DispatchSource;
+  city?: string;
+  instagram?: string;
+  link?: string;
 }
 
 export type ObligationStatus = 'open' | 'locked' | 'frozen';

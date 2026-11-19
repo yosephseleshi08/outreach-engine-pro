@@ -1,6 +1,7 @@
 import { ChannelLead, MultiChannelType } from '../types';
 import { extractCleanEmail, normalizeExistingLeadCadence } from './dataRepair';
 import { getStrictVoiceTypeForId, ensureVoiceTypeAssignments } from './voiceTypeEngine';
+import { extractInstagramHandle } from './leadLifecycle';
 
 const STORAGE_PREFIX = 'outreach_channel_leads_';
 
@@ -530,6 +531,12 @@ export function normalizeUrlForDuplicateCheck(
     }
   }
 
+  // Instagram links: extract exact handle (stripping ?fbclid=..., /reels/, etc.)
+  const igHandle = extractInstagramHandle(rawInput);
+  if (igHandle) {
+    return `instagram.com/${igHandle}`;
+  }
+
   // Strip query parameters and hash fragments for other links
   str = str.split('?')[0].split('#')[0];
 
@@ -566,6 +573,13 @@ export function normalizeUrlForDuplicateCheck(
  */
 export function areLinksEquivalent(linkA: string, linkB: string): boolean {
   if (!linkA || !linkB) return false;
+
+  const igA = extractInstagramHandle(linkA);
+  const igB = extractInstagramHandle(linkB);
+  if (igA && igB) {
+    return igA === igB;
+  }
+
   const normA = normalizeUrlForDuplicateCheck(linkA);
   const normB = normalizeUrlForDuplicateCheck(linkB);
   if (!normA || !normB) return false;

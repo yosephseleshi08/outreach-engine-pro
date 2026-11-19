@@ -1,5 +1,6 @@
 import { Lead } from '../types';
 import { parseBusinessFromUrl, isGenericPlaceholderName, isBarePlatformDomain } from './linkLeadParser';
+import { extractInstagramHandle } from './leadLifecycle';
 
 export interface DuplicateCheckResult {
   isDuplicate: boolean;
@@ -67,8 +68,8 @@ export function normalizeUrl(rawUrl: string): string {
 
       // Remove tracking garbage
       const trackingParams = [
-        'fref', 'mibextid', 'locale', 'ref', 'source', 'utm_source',
-        'utm_medium', 'utm_campaign', 'share_id', 'hrc', 'extid',
+        'fbclid', 'igsh', 'igshid', 'hl', 'fref', 'mibextid', 'locale', 'ref', 'source',
+        'utm_source', 'utm_medium', 'utm_campaign', 'share_id', 'hrc', 'extid',
         'rdid', 'paipv', '_rdr', 'sk', '_rdc', 'rdc', 'checkpoint_src',
         'hc_ref', 'comment_id', 'notif_id'
       ];
@@ -151,60 +152,70 @@ export function extractUniqueKey(rawUrl: string): string {
     return '';
   }
 
-  // 3. Instagram Handle
-  if (norm.startsWith('instagram.com/')) {
-    const igUser = norm.replace(/^instagram\.com\//, '').split('/')[0].replace(/^@/, '');
-    if (igUser && !['p', 'reel', 'stories', 'explore'].includes(igUser)) {
-      return `ig:${igUser}`;
-    }
-    return '';
+  // 3. Instagram Handle (strips ?fbclid=..., /reels/, etc.)
+  const igHandle = extractInstagramHandle(rawUrl);
+  if (igHandle) {
+    return `ig:${igHandle}`;
   }
 
   return '';
 }
 
 /**
- * Normalizes business name for loose equality check
+ * Exact case-insensitive business name normalization (no fuzzy regex stripping).
  */
 export function normalizeName(name: string): string {
   if (!name) return '';
-  return name
-    .toLowerCase()
-    .replace(/['’".,/#!$%^&*;:{}=\-_`~()]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return name.trim().toLowerCase();
 }
 
 /**
- * Checks if a given URL or business name is ALREADY present in the leads pipeline.
+ * Checks if a given URL or business name + city is ALREADY present in the leads pipeline.
  */
 export function checkDuplicateLead(
   urlOrInput: string,
   existingLeads: Lead[],
-  candidateName?: string
+  candidateName?: string,
+  candidateCity?: string
 ): DuplicateCheckResult {
   if (!urlOrInput && !candidateName) {
     return { isDuplicate: false };
   }
 
   const trimmedInput = urlOrInput.trim();
+  const inputIgHandle = extractInstagramHandle(trimmedInput);
   const inputNorm = normalizeUrl(trimmedInput);
   const inputKey = extractUniqueKey(trimmedInput);
 
   // Parse candidate name if not explicitly given
   const parsed = parseBusinessFromUrl(trimmedInput, candidateName);
   const targetNameNorm = normalizeName(candidateName || parsed.name);
+  const targetCityNorm = normalizeName(candidateCity || parsed.city || '');
 
   // If input is just a bare platform domain like facebook.com, don't flag as duplicate
   const isInputBare = isBarePlatformDomain(inputNorm) || isBarePlatformDomain(trimmedInput);
 
   for (const lead of existingLeads) {
     const leadLink = lead.profileUrl || lead.handle || lead.website || '';
+    const leadIgHandle = extractInstagramHandle(lead.handle || lead.profileUrl || leadLink);
     const leadNorm = normalizeUrl(leadLink);
     const leadKey = extractUniqueKey(leadLink);
     const leadNameNorm = normalizeName(lead.restaurantName);
+    const leadCityNorm = normalizeName(lead.city || '');
 
-    // 1. Direct URL match (only if neither is a bare platform domain)
+    // 1. Exact Instagram handle match (case-insensitive)
+    if (inputIgHandle && leadIgHandle) {
+      if (inputIgHandle === leadIgHandle) {
+        return {
+          isDuplicate: true,
+          matchedLead: lead,
+          reason: `Matches existing Instagram handle @${leadIgHandle} for "${lead.restaurantName}"`,
+        };
+      }
+      continue;
+    }
+
+    // 2. Direct non-IG URL / identity key match (only if neither is a bare platform domain)
     if (
       !isInputBare &&
       inputNorm &&
@@ -219,14 +230,13 @@ export function checkDuplicateLead(
       };
     }
 
-    // 2. Extracted platform identity key match (e.g. both Facebook page slug or Maps place)
     if (
       inputKey &&
       leadKey &&
       !isBarePlatformKey(inputKey) &&
       !isBarePlatformKey(leadKey) &&
       inputKey === leadKey &&
-      inputKey.length > 5
+      inputKey.length > 4
     ) {
       return {
         isDuplicate: true,
@@ -235,27 +245,22 @@ export function checkDuplicateLead(
       };
     }
 
-    // 3. Match by business name ONLY if BOTH are real non-generic names
+    // 3. When Instagram URL is missing, ONLY flag as duplicate if EXACT Business Name AND EXACT Location/City match
     if (
       targetNameNorm &&
       leadNameNorm &&
-      !isGenericPlaceholderName(parsed.name) &&
+      !isGenericPlaceholderName(candidateName || parsed.name) &&
       !isGenericPlaceholderName(lead.restaurantName) &&
       targetNameNorm === leadNameNorm &&
-      targetNameNorm.length > 3
+      targetCityNorm &&
+      leadCityNorm &&
+      targetCityNorm === leadCityNorm
     ) {
-      const platformMatches =
-        lead.platform.toLowerCase() === parsed.platform.toLowerCase() ||
-        (lead.platform === 'Google Maps' && parsed.platform === 'Google Maps') ||
-        (lead.platform === 'Facebook' && parsed.platform === 'Facebook');
-
-      if (platformMatches) {
-        return {
-          isDuplicate: true,
-          matchedLead: lead,
-          reason: `A ${lead.platform} lead for "${lead.restaurantName}" already exists in your pipeline (${lead.scheduledDay || 'Batch'} • ${lead.status.toUpperCase()})`,
-        };
-      }
+      return {
+        isDuplicate: true,
+        matchedLead: lead,
+        reason: `Exact business name and city match for "${lead.restaurantName}" (${lead.city})`,
+      };
     }
   }
 
@@ -407,6 +412,7 @@ export function findDuplicateLeadGroups(leads: Lead[]): DuplicateGroup[] {
 
     const uniqueKey = extractUniqueKey(rawLink || normUrl);
     const cleanName = normalizeName(lead.restaurantName);
+    const cleanCity = normalizeName(lead.city || '');
 
     let groupKey = '';
     let reason = '';
@@ -414,17 +420,20 @@ export function findDuplicateLeadGroups(leads: Lead[]): DuplicateGroup[] {
 
     if (uniqueKey && uniqueKey.length > 4 && !isBarePlatformKey(uniqueKey)) {
       groupKey = `link:${uniqueKey}`;
-      reason = `Matching profile link / URL (${uniqueKey})`;
+      reason = `Matching profile link / handle (${uniqueKey})`;
       displayName = normUrl || uniqueKey;
     } else if (normUrl && normUrl.length > 5 && !isBarePlatformDomain(normUrl)) {
       groupKey = `url:${normUrl}`;
       reason = `Matching URL: ${normUrl}`;
       displayName = normUrl;
-    } else if (cleanName && cleanName.length > 3 && !isGenericPlaceholderName(lead.restaurantName)) {
-      // Fallback: match by platform and business name ONLY if not a generic placeholder
-      const plat = (lead.platform || 'Other').toLowerCase();
-      groupKey = `name:${plat}:${cleanName}`;
-      reason = `Matching business name on ${lead.platform}`;
+    } else if (
+      cleanName &&
+      cleanCity &&
+      !isGenericPlaceholderName(lead.restaurantName)
+    ) {
+      // When IG/profile URL is missing, group ONLY by EXACT Business Name + EXACT Location/City
+      groupKey = `name_city:${cleanName}::${cleanCity}`;
+      reason = `Matching exact business name & city (${lead.city})`;
       displayName = lead.restaurantName;
     }
 

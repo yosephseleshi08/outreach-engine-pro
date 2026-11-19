@@ -5,7 +5,6 @@ import {
 } from '../types';
 import {
   canonicalizeLeadName,
-  findLeadDispatchHistoryByName,
   getLocalTodayDateString,
   loadDispatchLog,
   toLocalDateString,
@@ -118,39 +117,182 @@ function readStoredLeadsArray(storageKey: string): ChannelLead[] {
   }
 }
 
-function normalizeUrlHandle(raw?: string): string {
-  if (!raw || typeof raw !== 'string') return '';
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/^mailto:/i, '')
-    .replace(/^https?:\/\//i, '')
-    .replace(/^(?:www\.|m\.|mobile\.|web\.)/i, '')
-    .replace(/^@/, '')
-    .replace(/\/+$/, '');
+const RESERVED_IG_SEGMENTS = new Set([
+  'p',
+  'reel',
+  'reels',
+  'stories',
+  'explore',
+  'tv',
+  'accounts',
+  'direct',
+  'about',
+  'legal',
+  'developer',
+  'privacy',
+]);
+
+/**
+ * Extracts the exact Instagram handle/username (lowercased) from an Instagram URL or @handle,
+ * stripping out trailing URL parameters (e.g. ?fbclid=..., ?igsh=...) and path suffixes (e.g. /reels/).
+ */
+export function extractInstagramHandle(rawUrl?: string | null): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const input = rawUrl.trim();
+  if (!input) return '';
+
+  if (/^mailto:/i.test(input)) return '';
+  // Ignore email addresses (contain @ after local part, not an Instagram URL or leading @handle)
+  if (
+    /^[^/@\s]+@[^/@\s]+\.[^/@\s]+$/.test(input) ||
+    (!/^@/.test(input) && !/(?:instagram\.com|instagr\.am)/i.test(input))
+  ) {
+    return '';
+  }
+
+  // Direct @username handle
+  if (/^@/.test(input)) {
+    const clean = input.slice(1).split(/[/?#]/)[0].trim().toLowerCase();
+    return clean && !RESERVED_IG_SEGMENTS.has(clean) ? clean : '';
+  }
+
+  // Instagram URL (with or without protocol)
+  if (!/^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*(?:instagram\.com|instagr\.am)(?:\/|$)/i.test(input)) {
+    return '';
+  }
+
+  const withProto = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+  try {
+    const parsed = new URL(withProto);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length === 0) return '';
+    const username = segments[0].replace(/^@/, '').trim().toLowerCase();
+    if (!username || RESERVED_IG_SEGMENTS.has(username)) return '';
+    return username;
+  } catch {
+    const afterDomain = input
+      .replace(/^https?:\/\//i, '')
+      .replace(/^(?:[a-z0-9-]+\.)*(?:instagram\.com|instagr\.am)\/?/i, '')
+      .split(/[?#]/)[0];
+    const username =
+      afterDomain.split('/').filter(Boolean)[0]?.replace(/^@/, '').trim().toLowerCase() || '';
+    if (!username || RESERVED_IG_SEGMENTS.has(username)) return '';
+    return username;
+  }
 }
 
-function leadsShareLinkOrEmail(a: Partial<ChannelLead>, b: Partial<ChannelLead>): boolean {
-  const emailA = normalizeUrlHandle(a.email);
-  const emailB = normalizeUrlHandle(b.email);
-  if (emailA && emailB && emailA === emailB) return true;
+export interface DuplicateGuardCandidate {
+  name?: string;
+  city?: string;
+  location?: string;
+  link?: string;
+  platformLink?: string;
+  profileLink?: string;
+  email?: string;
+  facebook?: string;
+  instagram?: string;
+  rawDetails?: Record<string, any>;
+}
 
-  const linksA = [a.link, a.platformLink, a.instagram, a.facebook]
-    .map(normalizeUrlHandle)
-    .filter(Boolean);
-  const linksB = [b.link, b.platformLink, b.instagram, b.facebook]
-    .map(normalizeUrlHandle)
-    .filter(Boolean);
+function getLeadInstagramHandle(lead: DuplicateGuardCandidate): string {
+  const urlCandidates = [
+    lead.instagram,
+    lead.rawDetails?.instagram,
+    lead.rawDetails?.Instagram,
+    lead.rawDetails?.instagramUrl,
+    lead.rawDetails?.instagram_url,
+    lead.rawDetails?.instagramLink,
+    lead.rawDetails?.instagram_link,
+    lead.rawDetails?.instagramHandle,
+    lead.rawDetails?.instagram_handle,
+    lead.rawDetails?.ig,
+    lead.rawDetails?.igHandle,
+    lead.rawDetails?.ig_handle,
+    lead.rawDetails?.socialLinks?.instagram,
+    lead.platformLink,
+    lead.link,
+    lead.profileLink,
+  ];
 
-  for (const la of linksA) {
-    for (const lb of linksB) {
-      if (la === lb) return true;
-      const tailA = la.replace(/^(?:instagram\.com|facebook\.com|fb\.com)\//, '');
-      const tailB = lb.replace(/^(?:instagram\.com|facebook\.com|fb\.com)\//, '');
-      if (tailA && tailB && tailA === tailB) return true;
+  for (const val of urlCandidates) {
+    if (typeof val !== 'string' || !val.trim()) continue;
+    const handle = extractInstagramHandle(val);
+    if (handle) return handle;
+  }
+
+  // Support plain username in an explicit Instagram field (without URL or @)
+  const explicitFields = [
+    lead.instagram,
+    lead.rawDetails?.instagram,
+    lead.rawDetails?.instagramHandle,
+    lead.rawDetails?.instagram_handle,
+    lead.rawDetails?.igHandle,
+    lead.rawDetails?.ig_handle,
+  ];
+  for (const rawField of explicitFields) {
+    if (typeof rawField !== 'string') continue;
+    const trimmed = rawField.trim().replace(/^@/, '').toLowerCase();
+    if (/^[a-z0-9._]{2,}$/.test(trimmed) && !RESERVED_IG_SEGMENTS.has(trimmed)) {
+      return trimmed;
     }
   }
-  return false;
+
+  return '';
+}
+
+function normalizeExactValue(raw?: string | null): string {
+  if (!raw || typeof raw !== 'string') return '';
+  return raw.trim().toLowerCase();
+}
+
+function getLeadLocationCity(lead: DuplicateGuardCandidate): string {
+  const candidates = [
+    lead.city,
+    lead.location,
+    lead.rawDetails?.city,
+    lead.rawDetails?.City,
+    lead.rawDetails?.location,
+    lead.rawDetails?.Location,
+    lead.rawDetails?.market,
+    lead.rawDetails?.Market,
+  ];
+  for (const val of candidates) {
+    const norm = normalizeExactValue(val);
+    if (norm) return norm;
+  }
+  return '';
+}
+
+/**
+ * Strict Duplicate Guard matcher:
+ * 1. If both leads have an extracted Instagram handle, match ONLY on exact Instagram handle (case-insensitive).
+ * 2. If an Instagram URL/handle is missing, ONLY flag as duplicate if EXACT Business Name AND EXACT Location/City match.
+ * 3. No .includes(), .startsWith(), or fuzzy regex matching on business names.
+ */
+function isDuplicateByStrictGuard(
+  candidate: DuplicateGuardCandidate,
+  existing: DuplicateGuardCandidate
+): boolean {
+  const candidateIg = getLeadInstagramHandle(candidate);
+  const existingIg = getLeadInstagramHandle(existing);
+
+  if (candidateIg && existingIg) {
+    return candidateIg === existingIg;
+  }
+
+  const candidateName = normalizeExactValue(candidate.name);
+  const existingName = normalizeExactValue(existing.name);
+  const candidateCity = getLeadLocationCity(candidate);
+  const existingCity = getLeadLocationCity(existing);
+
+  return Boolean(
+    candidateName &&
+      existingName &&
+      candidateName === existingName &&
+      candidateCity &&
+      existingCity &&
+      candidateCity === existingCity
+  );
 }
 
 export interface DuplicateMatchResult {
@@ -163,20 +305,13 @@ export interface DuplicateMatchResult {
 }
 
 /**
- * Checks normalized name + normalized links/email across:
+ * Checks Duplicate Guard across:
  * 1. Active Combined + Instagram leads
  * 2. Archived Backstage leads
  * 3. Immutable 'ridge_dispatch_log' history
  */
 export function findNormalizedDuplicateMatches(
-  candidate: {
-    name?: string;
-    link?: string;
-    platformLink?: string;
-    email?: string;
-    facebook?: string;
-    instagram?: string;
-  },
+  candidate: DuplicateGuardCandidate,
   options?: {
     excludeLeadId?: string;
     activeCombined?: ChannelLead[];
@@ -184,7 +319,6 @@ export function findNormalizedDuplicateMatches(
     backstageLeads?: ChannelLead[];
   }
 ): DuplicateMatchResult {
-  const normCandidateName = canonicalizeLeadName(candidate.name);
   const combined =
     options?.activeCombined ??
     readStoredLeadsArray(COMBINED_LEADS_KEY).filter((l) => !l?.isArchived);
@@ -196,17 +330,30 @@ export function findNormalizedDuplicateMatches(
 
   const isMatch = (lead: ChannelLead): boolean => {
     if (options?.excludeLeadId && lead.id === options.excludeLeadId) return false;
-    if (normCandidateName && canonicalizeLeadName(lead.name) === normCandidateName) {
-      return true;
-    }
-    return leadsShareLinkOrEmail(candidate, lead);
+    return isDuplicateByStrictGuard(candidate, lead);
   };
 
   const activeMatches = [...combined, ...instagram].filter(isMatch);
   const backstageMatches = backstage.filter(isMatch);
-  const dispatchMatches = normCandidateName
-    ? findLeadDispatchHistoryByName(candidate.name || '')
-    : [];
+
+  // Build lookup of known lead metadata by leadId so older dispatch entries without city/ig can still resolve accurately
+  const leadById = new Map<string, ChannelLead>();
+  for (const l of [...combined, ...instagram, ...backstage]) {
+    if (l?.id) leadById.set(l.id, l);
+  }
+
+  const dispatchMatches = loadDispatchLog().filter((entry) => {
+    if (options?.excludeLeadId && entry.leadId === options.excludeLeadId) return false;
+    const linkedLead = leadById.get(entry.leadId);
+    return isDuplicateByStrictGuard(candidate, {
+      name: entry.leadName,
+      city: entry.city || linkedLead?.city || linkedLead?.rawDetails?.city || linkedLead?.rawDetails?.location,
+      instagram: entry.instagram || linkedLead?.instagram || linkedLead?.rawDetails?.instagram,
+      link: entry.link || linkedLead?.platformLink || linkedLead?.link,
+      platformLink: entry.link || linkedLead?.platformLink || linkedLead?.link,
+      rawDetails: linkedLead?.rawDetails,
+    });
+  });
 
   const hasMatch =
     activeMatches.length > 0 ||
@@ -214,12 +361,15 @@ export function findNormalizedDuplicateMatches(
     dispatchMatches.length > 0;
 
   let summaryReason: string | undefined;
+  const candidateIg = getLeadInstagramHandle(candidate);
   if (activeMatches.length > 0) {
     const m = activeMatches[0];
-    summaryReason = `Matches active lead ${m.id} (${m.name}) in ${m.channel === 'instagram' ? 'Instagram' : 'Combined'}`;
+    const reasonTag = candidateIg && getLeadInstagramHandle(m) === candidateIg ? `@${candidateIg}` : `${m.name}`;
+    summaryReason = `Matches active lead ${m.id} (${reasonTag}) in ${m.channel === 'instagram' ? 'Instagram' : 'Combined'}`;
   } else if (backstageMatches.length > 0) {
     const m = backstageMatches[0];
-    summaryReason = `Matches archived lead ${m.id} (${m.name}) in Backstage`;
+    const reasonTag = candidateIg && getLeadInstagramHandle(m) === candidateIg ? `@${candidateIg}` : `${m.name}`;
+    summaryReason = `Matches archived lead ${m.id} (${reasonTag}) in Backstage`;
   } else if (dispatchMatches.length > 0) {
     const latest = dispatchMatches[dispatchMatches.length - 1];
     summaryReason = `Previously dispatched as "${latest.leadName}" (${latest.step} on ${latest.localDate})`;

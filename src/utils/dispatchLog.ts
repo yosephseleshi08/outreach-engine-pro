@@ -9,28 +9,11 @@ import {
 export const DISPATCH_LOG_STORAGE_KEY = 'ridge_dispatch_log';
 
 /**
- * Canonical lead name normalizer shared with duplicate detection and dispatch deduping.
- * Strips diacritics, pipe/parenthetical location notes, city suffixes, punctuation, and extra spaces.
+ * Exact case-insensitive lead name normalizer (no fuzzy regex stripping).
  */
 export function canonicalizeLeadName(rawName?: string | null): string {
   if (!rawName || typeof rawName !== 'string') return '';
-  let str = rawName
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-
-  if (!str) return '';
-
-  // Remove parenthetical tags e.g. "(River Park/IUSB)", "(Downtown)"
-  str = str.replace(/\([^)]*\)/g, ' ');
-  // Remove trailing pipe metadata e.g. "| Italian", "| Fine Dining"
-  str = str.replace(/\|.*$/g, ' ');
-  // Normalize possessive / ampersand
-  str = str.replace(/&/g, ' and ').replace(/['’]s\b/g, 's');
-  // Strip remaining punctuation
-  str = str.replace(/[^a-z0-9\s]/g, ' ');
-  return str.replace(/\s+/g, ' ').trim();
+  return rawName.trim().toLowerCase();
 }
 
 /**
@@ -148,6 +131,9 @@ export interface AppendDispatchInput {
   localDate?: string;
   timestamp?: string;
   source?: DispatchSource;
+  city?: string;
+  instagram?: string;
+  link?: string;
 }
 
 /**
@@ -181,6 +167,9 @@ export function appendDispatchEntry(input: AppendDispatchInput): {
     localDate,
     timestamp,
     source: input.source || 'live',
+    ...(input.city ? { city: input.city } : {}),
+    ...(input.instagram ? { instagram: input.instagram } : {}),
+    ...(input.link ? { link: input.link } : {}),
   };
 
   existing.push(entry);
@@ -225,6 +214,9 @@ export function appendDispatchEntriesBatch(inputs: AppendDispatchInput[]): {
       localDate,
       timestamp,
       source: input.source || 'live',
+      ...(input.city ? { city: input.city } : {}),
+      ...(input.instagram ? { instagram: input.instagram } : {}),
+      ...(input.link ? { link: input.link } : {}),
     });
     addedCount++;
   }
@@ -261,6 +253,9 @@ export function backfillDispatchLogFromLeads(leads: ChannelLead[]): {
     if (!lead || !lead.id) continue;
     const channel = resolveLeadDispatchChannel(lead);
     const leadName = lead.name || lead.id;
+    const leadCity = lead.city || lead.rawDetails?.city || lead.rawDetails?.location;
+    const leadInstagram = lead.instagram || lead.rawDetails?.instagram;
+    const leadLink = lead.platformLink || lead.link;
 
     // D0 Initial Dispatch
     const d0Raw =
@@ -283,6 +278,9 @@ export function backfillDispatchLogFromLeads(leads: ChannelLead[]): {
         localDate: d0Date,
         timestamp: lead.dispatchedAt || lead.dmSentAt || `${d0Date}T12:00:00`,
         source: 'backfill',
+        city: leadCity,
+        instagram: leadInstagram,
+        link: leadLink,
       });
     }
 
@@ -297,6 +295,9 @@ export function backfillDispatchLogFromLeads(leads: ChannelLead[]): {
         localDate: d4Date,
         timestamp: `${d4Date}T12:00:00`,
         source: 'backfill',
+        city: leadCity,
+        instagram: leadInstagram,
+        link: leadLink,
       });
     }
 
@@ -311,6 +312,9 @@ export function backfillDispatchLogFromLeads(leads: ChannelLead[]): {
         localDate: d8Date,
         timestamp: `${d8Date}T12:00:00`,
         source: 'backfill',
+        city: leadCity,
+        instagram: leadInstagram,
+        link: leadLink,
       });
     }
 
@@ -325,6 +329,9 @@ export function backfillDispatchLogFromLeads(leads: ChannelLead[]): {
         localDate: d14Date,
         timestamp: `${d14Date}T12:00:00`,
         source: 'backfill',
+        city: leadCity,
+        instagram: leadInstagram,
+        link: leadLink,
       });
     }
   }
