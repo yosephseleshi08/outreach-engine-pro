@@ -1,7 +1,8 @@
 import { ChannelLead, MultiChannelType } from '../types';
-import { extractCleanEmail, normalizeExistingLeadCadence } from './dataRepair';
+import { extractCleanEmail, normalizeExistingLeadCadence, normDateStr } from './dataRepair';
 import { getStrictVoiceTypeForId, ensureVoiceTypeAssignments } from './voiceTypeEngine';
 import { extractInstagramHandle } from './leadLifecycle';
+import { getLocalTodayStr, normalizeToLocalDateStr, toCleanDateStr } from './cadenceEngine';
 
 const STORAGE_PREFIX = 'outreach_channel_leads_';
 
@@ -29,6 +30,30 @@ export function getChannelLabel(channel: MultiChannelType): string {
     case 'facebook':
       return 'Facebook';
   }
+}
+
+export function normalizeLeadDatesOnLoad(lead: ChannelLead): ChannelLead {
+  const cleanScheduled = toCleanDateStr(lead.scheduledDate) ?? normDateStr(lead.scheduledDate);
+  const cleanInitial = toCleanDateStr(lead.initialSentDate) ?? normDateStr(lead.initialSentDate);
+  const cleanDispatch = toCleanDateStr(lead.dispatchDate) ?? normDateStr(lead.dispatchDate);
+  const cleanWarmedUpAt = toCleanDateStr(lead.warmedUpAt) ?? normDateStr(lead.warmedUpAt);
+
+  if (
+    cleanScheduled === (lead.scheduledDate ?? undefined) &&
+    cleanInitial === (lead.initialSentDate ?? undefined) &&
+    cleanDispatch === (lead.dispatchDate ?? undefined) &&
+    cleanWarmedUpAt === (lead.warmedUpAt ?? undefined)
+  ) {
+    return lead;
+  }
+
+  return {
+    ...lead,
+    scheduledDate: cleanScheduled || undefined,
+    initialSentDate: cleanInitial || undefined,
+    dispatchDate: cleanDispatch || undefined,
+    warmedUpAt: cleanWarmedUpAt || undefined,
+  };
 }
 
 /**
@@ -59,7 +84,7 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
             channel: 'combined' as MultiChannelType,
             sortOrder: fbList.length + i,
           })),
-        ]).map((l) => normalizeExistingLeadCadence(l).normalizedLead);
+        ]).map((l) => normalizeLeadDatesOnLoad(normalizeExistingLeadCadence(l).normalizedLead));
         const { updatedLeads: merged } = ensureVoiceTypeAssignments(mergedRaw, channel);
         localStorage.setItem(storageKey, JSON.stringify(merged));
         return [...merged].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -73,8 +98,9 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
         let cadenceChanged = false;
         const cadenceMigrated = activeOnly.map((l: ChannelLead) => {
           const { normalizedLead, wasChanged } = normalizeExistingLeadCadence(l);
-          if (wasChanged) cadenceChanged = true;
-          return normalizedLead;
+          const cleanDated = normalizeLeadDatesOnLoad(normalizedLead);
+          if (wasChanged || cleanDated !== normalizedLead) cadenceChanged = true;
+          return cleanDated;
         });
         const normalized = normalizeEmailOnlyWarmupStatus(cadenceMigrated);
         const { updatedLeads: voiceNormalized, hasChanges: voiceChanged } =
@@ -98,7 +124,9 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
  */
 export function saveChannelLeads(channel: MultiChannelType, leads: ChannelLead[]): void {
   try {
-    const activeOnly = leads.filter((l) => !l.isArchived);
+    const activeOnly = leads
+      .filter((l) => !l.isArchived)
+      .map((l) => normalizeLeadDatesOnLoad(l));
     localStorage.setItem(`${STORAGE_PREFIX}${channel}`, JSON.stringify(activeOnly));
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
@@ -231,8 +259,12 @@ export type LeadLockReason = 'warmed' | 'sent' | null;
 export function getLeadLockReason(lead: ChannelLead): LeadLockReason {
   if (!lead) return null;
 
+  const normInitial = normalizeToLocalDateStr(lead.initialSentDate);
+  const isPastInitialSent = Boolean(normInitial && normInitial < getLocalTodayStr());
+
   const isSent = Boolean(
-    lead.initialSentDate ||
+    isPastInitialSent ||
+      lead.initialSentDate ||
       lead.dmSent ||
       lead.dmSentAt ||
       lead.lastContactDate ||

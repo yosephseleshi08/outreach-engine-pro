@@ -16,33 +16,50 @@ export function getLocalTodayStr(): string {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * Returns tomorrow's date formatted as YYYY-MM-DD strictly in user's local timezone
+ */
+export function getLocalTomorrowStr(): string {
+  const now = new Date();
+  now.setDate(now.getDate() + 1);
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // Backward-compatibility alias
 export const getTodayStr = getLocalTodayStr;
 
 /**
- * Normalizes any date format (YYYY-MM-DD, MM/DD/YYYY, M/D/YYYY, YYYY/MM/DD, timestamps)
- * into a standardized local calendar YYYY-MM-DD string.
+ * Normalizes any date format (YYYY-MM-DD, ISO timestamps, Date objects, MM/DD/YYYY, YYYY/MM/DD)
+ * into a clean YYYY-MM-DD string with no time component.
+ * Strips time from ISO strings (e.g. "2026-11-24T00:00:00.000Z" -> "2026-11-24") without UTC shifting.
  */
-export function normalizeToLocalDateStr(rawInput?: string | null): string | null {
+export function normalizeToLocalDateStr(rawInput?: string | Date | null): string | null {
   if (!rawInput) return null;
+
+  if (rawInput instanceof Date) {
+    if (isNaN(rawInput.getTime())) return null;
+    const y = rawInput.getFullYear();
+    const m = String(rawInput.getMonth() + 1).padStart(2, '0');
+    const d = String(rawInput.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
   const str = String(rawInput).trim();
   if (!str) return null;
 
-  // 1. Plain local date format: YYYY-MM-DD (strictly 10 characters, no time component)
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
-    return str;
+  // 1. Plain local date format or ISO timestamp: strip 'T...' time component directly
+  const strippedT = str.includes('T') ? str.split('T')[0].trim() : str;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(strippedT)) {
+    return strippedT;
   }
 
-  // 2. If it contains time (like ISO 8601 with 'T', e.g. 2026-11-11T03:59:00Z or date with space and time),
-  // parse through Date object using local calendar getters to strictly honor user's local timezone.
-  if (str.includes('T') || str.includes(':') || str.includes('Z')) {
-    const parsed = new Date(str);
-    if (!isNaN(parsed.getTime())) {
-      const y = parsed.getFullYear();
-      const m = String(parsed.getMonth() + 1).padStart(2, '0');
-      const d = String(parsed.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
+  // 2. Date with space and time prefix (e.g., "2026-11-24 14:30:00")
+  const spaceTimeMatch = str.match(/^(\d{4}-\d{2}-\d{2})\s+/);
+  if (spaceTimeMatch) {
+    return spaceTimeMatch[1];
   }
 
   // 3. US format (MM/DD/YYYY or M/D/YYYY)
@@ -72,7 +89,27 @@ export function normalizeToLocalDateStr(rawInput?: string | null): string | null
     return `${y}-${m}-${d}`;
   }
 
-  return str;
+  return null;
+}
+
+/**
+ * Strips any time component or converts Date objects into a clean YYYY-MM-DD string.
+ */
+export function toCleanDateStr(rawInput?: unknown): string | null {
+  if (!rawInput) return null;
+  if (rawInput instanceof Date) {
+    return normalizeToLocalDateStr(rawInput);
+  }
+  if (typeof rawInput === 'string') {
+    const trimmed = rawInput.trim();
+    if (!trimmed) return null;
+    const stripped = trimmed.split('T')[0].trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(stripped)) {
+      return stripped;
+    }
+    return normalizeToLocalDateStr(trimmed);
+  }
+  return null;
 }
 
 /**
@@ -438,8 +475,9 @@ export interface ResolvedCadenceStep {
 }
 
 /**
- * Calculates the lead's actual current cadence step based on days passed since initialSentDate
- * and followupCount, automatically advancing past skipped days (e.g. missed Day 4 -> Day 8 on Day 8+).
+ * Calculates the lead's actual current cadence step based on exact days passed since initialSentDate
+ * and followupCount. Only exact Day 4, Day 8, or Day 14 touchpoints are due; all other days stay
+ * hidden until the next exact cadence day arrives.
  */
 export function resolveLeadCadenceStep(
   lead: ChannelLead,
@@ -508,6 +546,19 @@ export function resolveLeadCadenceStep(
     };
   }
 
+  if (effectiveInitial) {
+    const rawDiff = getDayDifference(today, effectiveInitial);
+    if (rawDiff < 0) {
+      return {
+        stageNumber: null,
+        step: null,
+        daysSinceInitial: 0,
+        effectiveInitialSentDate: effectiveInitial,
+        isFollowupDue: false,
+      };
+    }
+  }
+
   const daysSinceInitial = effectiveInitial
     ? Math.max(0, getDayDifference(today, effectiveInitial))
     : fuCount === 0
@@ -516,8 +567,8 @@ export function resolveLeadCadenceStep(
     ? 8
     : 14;
 
-  // Day 14 = 14+ days passed and followupCount <= 2 (handles skipped Day 4 or Day 8)
-  if (daysSinceInitial >= 14 && fuCount <= 2) {
+  // Day 14 = exact 14 days passed and followupCount <= 2
+  if (daysSinceInitial === 14 && fuCount <= 2) {
     return {
       stageNumber: 14,
       step: 3,
@@ -527,8 +578,8 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Day 8 = 8+ days passed and followupCount <= 1 (handles skipped Day 4)
-  if (daysSinceInitial >= 8 && fuCount <= 1) {
+  // Day 8 = exact 8 days passed and followupCount <= 1
+  if (daysSinceInitial === 8 && fuCount <= 1) {
     return {
       stageNumber: 8,
       step: 2,
@@ -538,8 +589,8 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Day 4 = 4+ days passed and followupCount === 0
-  if (daysSinceInitial >= 4 && fuCount === 0) {
+  // Day 4 = exact 4 days passed and followupCount === 0
+  if (daysSinceInitial === 4 && fuCount === 0) {
     return {
       stageNumber: 4,
       step: 1,
@@ -549,7 +600,7 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Waiting for next follow-up window
+  // Non-cadence days stay hidden until the next exact cadence day (4, 8, or 14)
   return {
     stageNumber: null,
     step: null,
@@ -561,7 +612,7 @@ export function resolveLeadCadenceStep(
 
 /**
  * Day 4 Follow-Up (Value Check-In):
- * True when resolved cadence step is Day 4 (4-7 days passed and followupCount === 0).
+ * True when resolved cadence step is exact Day 4 (4 days passed and followupCount === 0).
  */
 export function isDay4FollowupDue(lead: ChannelLead, today = getLocalTodayStr()): boolean {
   return resolveLeadCadenceStep(lead, today).stageNumber === 4;
@@ -569,7 +620,7 @@ export function isDay4FollowupDue(lead: ChannelLead, today = getLocalTodayStr())
 
 /**
  * Day 8 Follow-Up (Social Proof / Quick Bump):
- * True when resolved cadence step is Day 8 (8-13 days passed and followupCount <= 1, including skipped Day 4).
+ * True when resolved cadence step is exact Day 8 (8 days passed and followupCount <= 1).
  */
 export function isDay8FollowupDue(lead: ChannelLead, today = getLocalTodayStr()): boolean {
   return resolveLeadCadenceStep(lead, today).stageNumber === 8;
@@ -577,14 +628,14 @@ export function isDay8FollowupDue(lead: ChannelLead, today = getLocalTodayStr())
 
 /**
  * Day 14 Follow-Up (Breakup / Final Nudge):
- * True when resolved cadence step is Day 14 (14+ days passed and followupCount <= 2, including skipped Day 4/8).
+ * True when resolved cadence step is exact Day 14 (14 days passed and followupCount <= 2).
  */
 export function isDay14FollowupDue(lead: ChannelLead, today = getLocalTodayStr()): boolean {
   return resolveLeadCadenceStep(lead, today).stageNumber === 14;
 }
 
 /**
- * Checks if any follow-up touchpoint (Day 4, Day 8, or Day 14) is due today or overdue.
+ * Checks if any follow-up touchpoint (exact Day 4, Day 8, or Day 14) is due today.
  */
 export function isAnyFollowupDueToday(lead: ChannelLead, today = getLocalTodayStr()): boolean {
   return resolveLeadCadenceStep(lead, today).isFollowupDue;

@@ -275,9 +275,9 @@ function countFollowupsDueForDate(leads: ChannelLead[], dateStr: string): number
       : 14;
 
     if (
-      (daysElapsed >= 14 && fuCount <= 2) ||
-      (daysElapsed >= 8 && fuCount <= 1) ||
-      (daysElapsed >= 4 && fuCount === 0)
+      (daysElapsed === 14 && fuCount <= 2) ||
+      (daysElapsed === 8 && fuCount <= 1) ||
+      (daysElapsed === 4 && fuCount === 0)
     ) {
       count++;
     }

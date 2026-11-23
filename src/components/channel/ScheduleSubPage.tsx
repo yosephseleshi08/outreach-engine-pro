@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   X,
   Flame,
+  Lock,
 } from 'lucide-react';
 import { ChannelLead, MultiChannelType } from '../../types';
 import { getChannelLabel } from '../../utils/channelStorage';
@@ -17,6 +18,9 @@ import {
   getScheduleDayStyle,
   addDays,
   isEmailOnlyLead,
+  resolveLeadCadenceStep,
+  getDayDifference,
+  toCleanDateStr,
 } from '../../utils/cadenceEngine';
 import { formatDisplayDate } from '../../utils/historyStorage';
 
@@ -30,26 +34,97 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
   const [scheduledBannerMsg, setScheduledBannerMsg] = useState<string | null>(null);
   const [showAutoScheduleModal, setShowAutoScheduleModal] = useState(false);
 
+  const todayStr = getLocalTodayStr();
+
   const handleDateChange = (leadId: string, newDate: string) => {
-    const normalized = normalizeToLocalDateStr(newDate);
+    const cleanInput = toCleanDateStr(newDate);
+    const normalized = cleanInput && /^\d{4}-\d{2}-\d{2}$/.test(cleanInput) ? cleanInput : null;
     const updated = leads.map((l) => {
-      if (l.id === leadId) {
-        const emailOnly = isEmailOnlyLead(l);
+      if (l.id !== leadId) return l;
+
+      const emailOnly = isEmailOnlyLead(l);
+
+      // 1. Cleared date
+      if (!normalized) {
+        const hasRecordedFollowups = Boolean(
+          l.followup1SentDate || l.followup2SentDate || l.followup3SentDate || l.repliedAt
+        );
+        if (hasRecordedFollowups) {
+          return {
+            ...l,
+            scheduledDate: undefined,
+            dismissedDate: undefined,
+          };
+        }
         return {
           ...l,
-          scheduledDate: normalized || undefined,
-          warmupStatus: normalized
-            ? emailOnly
-              ? ('warmed' as const)
-              : (l.warmupStatus || (l.isWarmedUp ? 'warmed' : 'locked'))
-            : emailOnly
-            ? ('warmed' as const)
-            : undefined,
-          isWarmedUp: emailOnly ? true : l.isWarmedUp,
+          scheduledDate: undefined,
+          initialSentDate: undefined,
+          dispatchDate: undefined,
+          dmSent: false,
+          status: undefined,
+          followup1Date: undefined,
+          followup2Date: undefined,
+          followup3Date: undefined,
+          followupCount: 0,
+          leadStatus: 'not_sent' as const,
+          cadenceStatus: undefined,
+          isCompleted: false,
+          warmupStatus: emailOnly ? ('warmed' as const) : undefined,
+          isWarmedUp: emailOnly ? true : false,
           dismissedDate: undefined,
         };
       }
-      return l;
+
+      // 2. Past date -> Save as initialSentDate so cadence calculates Day 4 / 8 / 14 from it
+      if (normalized < todayStr) {
+        return {
+          ...l,
+          initialSentDate: normalized,
+          dispatchDate: normalized,
+          dmSent: true,
+          status: 'dispatched' as const,
+          leadStatus: l.isSeen ? ('seen' as const) : ('waiting_reply' as const),
+          cadenceStatus: 'running' as const,
+          isCompleted: false,
+          followupCount:
+            typeof l.followupCount === 'number' && !Number.isNaN(l.followupCount)
+              ? l.followupCount
+              : 0,
+          followup1Date: addDays(normalized, 4),
+          followup2Date: addDays(normalized, 8),
+          followup3Date: addDays(normalized, 14),
+          warmupStatus: 'warmed' as const,
+          isWarmedUp: true,
+          warmedUpAt: l.warmedUpAt || normalized,
+          scheduledDate: undefined,
+          dismissedDate: undefined,
+        };
+      }
+
+      // 3. Today or future date -> Save as scheduledDate (for next follow-up if already in sequence, or Day 0 otherwise)
+      const existingInitial = normalizeToLocalDateStr(l.initialSentDate);
+      const hasPastInitial = Boolean(existingInitial && existingInitial < todayStr);
+
+      if (hasPastInitial) {
+        return {
+          ...l,
+          scheduledDate: normalized,
+          warmupStatus: 'warmed' as const,
+          isWarmedUp: true,
+          dismissedDate: undefined,
+        };
+      }
+
+      return {
+        ...l,
+        scheduledDate: normalized,
+        warmupStatus: emailOnly
+          ? ('warmed' as const)
+          : (l.warmupStatus || (l.isWarmedUp ? 'warmed' : 'locked')),
+        isWarmedUp: emailOnly ? true : l.isWarmedUp,
+        dismissedDate: undefined,
+      };
     });
     onUpdateLeads(updated);
   };
@@ -62,8 +137,8 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
     setShowAutoScheduleModal(false);
     if (leads.length === 0) return;
 
-    const todayStr = getLocalTodayStr();
-    const startDate = startMode === 'today' ? todayStr : addDays(todayStr, 1);
+    const currentToday = getLocalTodayStr();
+    const startDate = startMode === 'today' ? currentToday : addDays(currentToday, 1);
     const dailyQuota = channel === 'instagram' ? 6 : 4;
 
     const updated = autoScheduleLeads(leads, channel, startDate);
@@ -77,7 +152,7 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
   };
 
   const activeSchedulableLeads = leads.filter((l) => l.cadenceStatus !== 'cancelled');
-  const scheduledCount = activeSchedulableLeads.filter((l) => !!l.scheduledDate).length;
+  const scheduledCount = activeSchedulableLeads.filter((l) => Boolean(l.scheduledDate || l.initialSentDate)).length;
   const unscheduledCount = activeSchedulableLeads.length - scheduledCount;
 
   // Format date helper: e.g. "Wed, Nov 11, 2026"
@@ -152,18 +227,26 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b border-white/[0.08] bg-slate-950/60 text-slate-400 text-xs font-semibold uppercase tracking-wider">
-                  <th className="py-3 px-4 text-left w-28">Lead ID</th>
+                  <th className="py-3 px-4 text-left w-32">Lead ID</th>
                   <th className="py-3 px-4 text-left">Prospect Name</th>
                   {/* Requirement 4: Replaced Profile Link with Date column */}
-                  <th className="py-3 px-4 text-left w-56">Scheduled Date</th>
+                  <th className="py-3 px-4 text-left w-72">Scheduled / Sent Date</th>
                   <th className="py-3 px-4 text-right w-64">Edit Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
                 {leads.map((lead) => {
-                  const hasDate = Boolean(lead.scheduledDate);
-                  const isToday = isDateToday(lead.scheduledDate);
-                  const dayStyle = getScheduleDayStyle(lead.scheduledDate);
+                  const normInitial = normalizeToLocalDateStr(lead.initialSentDate);
+                  const isPastInitial = Boolean(normInitial && normInitial < todayStr);
+                  const effectiveDate = lead.scheduledDate || lead.initialSentDate;
+                  const hasDate = Boolean(effectiveDate);
+                  const isToday = isDateToday(effectiveDate);
+                  const dayStyle = getScheduleDayStyle(effectiveDate);
+                  const resolved = resolveLeadCadenceStep(lead, todayStr);
+                  const daysSinceSent = normInitial ? Math.max(0, getDayDifference(todayStr, normInitial)) : 0;
+
+                  const nextTargetStage =
+                    daysSinceSent < 4 ? 4 : daysSinceSent < 8 ? 8 : daysSinceSent < 14 ? 14 : null;
 
                   return (
                     <tr
@@ -172,11 +255,22 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
                         isToday ? 'ring-1 ring-emerald-500/40 bg-emerald-950/20' : ''
                       }`}
                     >
-                      {/* ID */}
+                      {/* ID + Lock Indicator when initialSentDate is in the past */}
                       <td className="py-3.5 px-4 text-left font-mono text-xs tabular-nums">
-                        <span className="font-semibold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-md border border-indigo-500/20">
-                          {lead.id}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-md border border-indigo-500/20">
+                            {lead.id}
+                          </span>
+                          {isPastInitial && (
+                            <span
+                              className="inline-flex items-center justify-center w-5 h-5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400"
+                              title="Locked in sequence: initialSentDate is in the past"
+                              aria-label="Locked in sequence"
+                            >
+                              <Lock className="w-3 h-3" />
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Name */}
@@ -186,22 +280,41 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
                         </div>
                       </td>
 
-                      {/* Requirement 4: Date Column (e.g. Wed, Nov 11, 2026) */}
+                      {/* Date / Cadence Status Column */}
                       <td className="py-3.5 px-4 text-left">
                         {lead.cadenceStatus === 'cancelled' ? (
                           <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30">
                             Cancelled{lead.cancelledReason ? ` · ${lead.cancelledReason}` : ''}
                           </span>
                         ) : hasDate ? (
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span
                               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold font-mono border ${dayStyle.badgeClass}`}
                             >
-                              <span>{formatDateDisplay(lead.scheduledDate)}</span>
+                              <span>{formatDateDisplay(effectiveDate)}</span>
                             </span>
                             {isToday && (
                               <span className="text-[10px] font-black uppercase font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse">
                                 TODAY
+                              </span>
+                            )}
+                            {isPastInitial && normInitial && (
+                              <span
+                                className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded border ${
+                                  resolved.isFollowupDue
+                                    ? resolved.stageNumber === 4
+                                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                      : resolved.stageNumber === 8
+                                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                      : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                                    : 'bg-slate-800/80 text-slate-300 border-white/10'
+                                }`}
+                              >
+                                {resolved.isFollowupDue
+                                  ? `Day ${resolved.stageNumber} Due Today`
+                                  : nextTargetStage
+                                  ? `Day ${daysSinceSent} · Next: Day ${nextTargetStage} (${nextTargetStage - daysSinceSent}d)`
+                                  : `Initial Sent: Day ${daysSinceSent}`}
                               </span>
                             )}
                           </div>
@@ -217,12 +330,14 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
                         <div className="flex items-center justify-end gap-2.5">
                           <input
                             type="date"
-                            value={lead.scheduledDate || ''}
+                            value={toCleanDateStr(lead.scheduledDate) || toCleanDateStr(lead.initialSentDate) || ''}
                             onChange={(e) => handleDateChange(lead.id, e.target.value)}
                             className={`px-3 py-1.5 bg-slate-950 border rounded-lg text-xs font-mono tabular-nums text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all ${
                               hasDate
                                 ? isToday
                                   ? 'border-amber-500/50 bg-amber-500/5 text-amber-200'
+                                  : isPastInitial
+                                  ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-200'
                                   : 'border-indigo-500/40 bg-indigo-500/5 text-indigo-200'
                                 : 'border-white/10'
                             }`}

@@ -303,12 +303,17 @@ export function FollowupScheduleSubPage({
       !resolved.isFollowupDue &&
       resolved.stageNumber === null &&
       Boolean(resolved.effectiveInitialSentDate || l.dmSent) &&
-      (l.followupCount === 0 || l.followupCount === undefined)
+      (l.followupCount === 0 || l.followupCount === undefined) &&
+      resolved.daysSinceInitial < 4
     );
   });
   const nextDay4Countdown = day4LockedLeads.length > 0
     ? Math.min(...day4LockedLeads.map((l) => {
-        const base = getEffectiveInitialSentDate(l) || getLeadBaseContactDate(l);
+        const resolved = resolveLeadCadenceStep(l, todayStr);
+        if (resolved.effectiveInitialSentDate) {
+          return Math.max(1, 4 - resolved.daysSinceInitial);
+        }
+        const base = getLeadBaseContactDate(l);
         const targetDate = l.followup1Date || addDays(base, 4);
         const diff = getDayDifference(targetDate, todayStr);
         return diff > 0 ? diff : 1;
@@ -321,16 +326,22 @@ export function FollowupScheduleSubPage({
     if (l.isCompleted || l.leadStatus === 'replied' || l.leadStatus === 'completed') return false;
     if (l.cadenceStatus === 'cancelled') return false;
     const resolved = resolveLeadCadenceStep(l, todayStr);
+    const fuCount = l.followupCount ?? 0;
     return (
       !resolved.isFollowupDue &&
       resolved.stageNumber === null &&
       Boolean(resolved.effectiveInitialSentDate || l.dmSent) &&
-      l.followupCount === 1
+      ((fuCount === 1 && resolved.daysSinceInitial < 8) ||
+        (fuCount === 0 && resolved.daysSinceInitial > 4 && resolved.daysSinceInitial < 8))
     );
   });
   const nextDay8Countdown = day8LockedLeads.length > 0
     ? Math.min(...day8LockedLeads.map((l) => {
-        const base = getEffectiveInitialSentDate(l) || getLeadBaseContactDate(l);
+        const resolved = resolveLeadCadenceStep(l, todayStr);
+        if (resolved.effectiveInitialSentDate) {
+          return Math.max(1, 8 - resolved.daysSinceInitial);
+        }
+        const base = getLeadBaseContactDate(l);
         const targetDate = l.followup2Date || addDays(base, 8);
         const diff = getDayDifference(targetDate, todayStr);
         return diff > 0 ? diff : 1;
@@ -343,16 +354,22 @@ export function FollowupScheduleSubPage({
     if (l.isCompleted || l.leadStatus === 'replied' || l.leadStatus === 'completed') return false;
     if (l.cadenceStatus === 'cancelled') return false;
     const resolved = resolveLeadCadenceStep(l, todayStr);
+    const fuCount = l.followupCount ?? 0;
     return (
       !resolved.isFollowupDue &&
       resolved.stageNumber === null &&
       Boolean(resolved.effectiveInitialSentDate || l.dmSent) &&
-      l.followupCount === 2
+      ((fuCount === 2 && resolved.daysSinceInitial < 14) ||
+        (fuCount <= 1 && resolved.daysSinceInitial > 8 && resolved.daysSinceInitial < 14))
     );
   });
   const nextDay14Countdown = day14LockedLeads.length > 0
     ? Math.min(...day14LockedLeads.map((l) => {
-        const base = getEffectiveInitialSentDate(l) || getLeadBaseContactDate(l);
+        const resolved = resolveLeadCadenceStep(l, todayStr);
+        if (resolved.effectiveInitialSentDate) {
+          return Math.max(1, 14 - resolved.daysSinceInitial);
+        }
+        const base = getLeadBaseContactDate(l);
         const targetDate = l.followup3Date || addDays(base, 14);
         const diff = getDayDifference(targetDate, todayStr);
         return diff > 0 ? diff : 1;
@@ -506,7 +523,8 @@ export function FollowupScheduleSubPage({
           ) : (
             dueTodayLeads.map((lead) => {
               const resolved = resolveLeadCadenceStep(lead, todayStr);
-              const stageNumber: 0 | 4 | 8 | 14 = resolved.stageNumber ?? 0;
+              if (resolved.stageNumber === null) return null;
+              const stageNumber: 0 | 4 | 8 | 14 = resolved.stageNumber;
               const isInitial = stageNumber === 0;
               const isWarmedBeforeToday = isLeadWarmedBeforeToday(lead, todayStr);
               const isWarmedToday = isLeadWarmedToday(lead, todayStr);

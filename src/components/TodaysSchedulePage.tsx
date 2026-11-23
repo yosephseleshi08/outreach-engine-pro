@@ -55,7 +55,9 @@ import {
 } from '../utils/channelStorage';
 import {
   getLocalTodayStr,
+  getLocalTomorrowStr,
   normalizeToLocalDateStr,
+  toCleanDateStr,
   isDateToday,
   isDateOverdue,
   addDays,
@@ -76,7 +78,6 @@ import {
   isEmailOnlyLead,
   isLeadWarmedBeforeToday,
   isLeadWarmedToday,
-  getTomorrowWarmupTargetDate,
   isManualWarmupOverrideEnabled,
   setManualWarmupOverride,
 } from '../utils/cadenceEngine';
@@ -352,10 +353,13 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     handleUpdateLead(updated);
   };
 
-  const allLeads: (ChannelLead & { channelLabel: string })[] = [
-    ...effectiveCombinedLeads.map((l) => ({ ...l, channelLabel: 'Combined Outreach' })),
-    ...instagramLeads.map((l) => ({ ...l, channelLabel: 'Instagram' })),
-  ];
+  const allLeads: (ChannelLead & { channelLabel: string })[] = useMemo(
+    () => [
+      ...effectiveCombinedLeads.map((l) => ({ ...l, channelLabel: 'Combined Outreach' })),
+      ...instagramLeads.map((l) => ({ ...l, channelLabel: 'Instagram' })),
+    ],
+    [effectiveCombinedLeads, instagramLeads]
+  );
 
   // 1. Sent Today Counts
   const sentTodayLeads = allLeads.filter((l) => isInitialSentToday(l, todayStr));
@@ -378,7 +382,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
   // it CANNOT be sent today. It automatically rolls over to tomorrow (the next dispatch day)
   // so the user can warm it up today in the Warm-Up queue!
   useEffect(() => {
-    const targetTomorrow = getTomorrowWarmupTargetDate(todayStr);
+    const targetTomorrow = normalizeToLocalDateStr(getLocalTomorrowStr()) || getLocalTomorrowStr();
     let igNeedsUpdate = false;
     const nextIgLeads = instagramLeads.map((lead) => {
       if (
@@ -389,9 +393,10 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
       ) {
         return lead;
       }
-      if (!lead.scheduledDate) return lead;
+      const normScheduledDate = normalizeToLocalDateStr(lead.scheduledDate);
+      if (!normScheduledDate) return lead;
       // If scheduled for today or overdue, but wasn't warmed up before today
-      if (lead.scheduledDate <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
+      if (normScheduledDate <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
         igNeedsUpdate = true;
         const warmedToday = isLeadWarmedToday(lead, todayStr);
         return {
@@ -419,9 +424,10 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
         ) {
           return lead;
         }
-        if (!lead.scheduledDate) return lead;
+        const normScheduledDate = normalizeToLocalDateStr(lead.scheduledDate);
+        if (!normScheduledDate) return lead;
         if (isEmailOnlyLead(lead)) return lead;
-        if (lead.scheduledDate <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
+        if (normScheduledDate <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
           combinedNeedsUpdate = true;
           const warmedToday = isLeadWarmedToday(lead, todayStr);
           return {
@@ -499,47 +505,44 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
   );
 
   // 4. WARM-UP NEEDS TODAY (Tracking for tomorrow's dispatch)
-  const [schedY, schedM, schedD] = todayStr.split('-').map(Number);
-  const schedTodayDate = new Date(schedY, schedM - 1, schedD);
-  const schedDayOfWeek = schedTodayDate.getDay();
-  const isSchedSaturday = schedDayOfWeek === 6;
-  const warmupTargetDateStr = getTomorrowWarmupTargetDate(todayStr);
+  const tomorrowStr = getLocalTomorrowStr(); // e.g., "2026-11-24"
 
-  // All tomorrow-scheduled social leads eligible for warm-up (Email-only leads are excluded)
-  const tomorrowSocialWarmupLeads = useMemo(() => {
-    if (!warmupTargetDateStr) return [];
-    const combinedAll = [
-      ...effectiveCombinedLeads.map((l) => ({ ...l, channelLabel: 'Combined Outreach' })),
-      ...instagramLeads.map((l) => ({ ...l, channelLabel: 'Instagram' })),
-    ];
-    return combinedAll.filter((l) => {
-      if (l.isCompleted || l.isArchived || l.cadenceStatus === 'cancelled' || getEffectiveInitialSentDate(l) || l.dmSent) return false;
-      if (normalizeToLocalDateStr(l.scheduledDate) !== warmupTargetDateStr) return false;
-      if (isEmailOnlyLead(l)) return false;
-      return getBlindRouteLink(l, 'warmup') !== null;
+  // Warm-Up Queue strictly strips time from scheduledDate and compares against tomorrowStr
+  const warmUpToday = useMemo(() => {
+    return allLeads.filter((lead) => {
+      if (lead.isArchived || lead.cadenceStatus === 'cancelled') return false;
+      const cleanScheduledDate =
+        typeof lead.scheduledDate === 'string'
+          ? lead.scheduledDate.split('T')[0].trim()
+          : toCleanDateStr(lead.scheduledDate);
+      const normalizedDate =
+        cleanScheduledDate && /^\d{4}-\d{2}-\d{2}$/.test(cleanScheduledDate)
+          ? cleanScheduledDate
+          : toCleanDateStr(lead.scheduledDate);
+      return normalizedDate === tomorrowStr && lead.warmupStatus !== 'warmed';
     });
-  }, [effectiveCombinedLeads, instagramLeads, warmupTargetDateStr]);
+  }, [allLeads, tomorrowStr]);
 
-  // Warm-Up Queue strictly queries leads where scheduledDate === tomorrow AND warmupStatus !== 'warmed'
-  const warmupForTomorrowLeads = useMemo(() => {
-    return tomorrowSocialWarmupLeads.filter(
-      (l) => l.warmupStatus !== 'warmed' && !l.isWarmedUp
-    );
-  }, [tomorrowSocialWarmupLeads]);
+  const warmupForTomorrowLeads = warmUpToday;
 
-  const warmupCompletedCount = tomorrowSocialWarmupLeads.filter(
-    (l) => l.warmupStatus === 'warmed' || Boolean(l.isWarmedUp)
-  ).length;
+  const warmupCompletedCount = useMemo(() => {
+    return allLeads.filter((lead) => {
+      if (lead.isArchived || lead.cadenceStatus === 'cancelled') return false;
+      if (isEmailOnlyLead(lead)) return false;
+      const cleanScheduledDate = toCleanDateStr(lead.scheduledDate);
+      return cleanScheduledDate === tomorrowStr && lead.warmupStatus === 'warmed';
+    }).length;
+  }, [allLeads, tomorrowStr]);
 
-  const warmupTotalScheduled = tomorrowSocialWarmupLeads.length;
-  const warmupTotalNeeded = warmupForTomorrowLeads.length;
+  const warmupTotalNeeded = warmUpToday.length;
+  const warmupTotalScheduled = warmupCompletedCount + warmupTotalNeeded;
   const warmupPercent = warmupTotalScheduled > 0
     ? Math.min(100, Math.round((warmupCompletedCount / warmupTotalScheduled) * 100))
     : 100;
   const isWarmupFinished = warmupTotalScheduled > 0 && warmupTotalNeeded === 0;
 
   const handleToggleLeadWarmup = (lead: ChannelLead) => {
-    const isCurrentlyWarmed = lead.warmupStatus === 'warmed' || Boolean(lead.isWarmedUp);
+    const isCurrentlyWarmed = lead.warmupStatus === 'warmed';
     const platform = getLeadWarmupPlatform(lead);
     const currentCooldown = platform === 'instagram' ? igWarmupCooldownMs : fbWarmupCooldownMs;
 
@@ -556,7 +559,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     }
 
     const nextVal = !isCurrentlyWarmed;
-    const targetTomorrow = getTomorrowWarmupTargetDate(todayStr);
+    const normScheduledDate = normalizeToLocalDateStr(lead.scheduledDate);
 
     const updated: ChannelLead = {
       ...lead,
@@ -565,7 +568,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
       warmedUpAt: nextVal ? todayStr : undefined,
       // If warming up today, strictly set scheduled date to tomorrow's dispatch date
       scheduledDate: nextVal
-        ? (lead.scheduledDate && lead.scheduledDate > todayStr ? lead.scheduledDate : targetTomorrow)
+        ? (normScheduledDate && normScheduledDate > todayStr ? normScheduledDate : tomorrowStr)
         : lead.scheduledDate,
     };
     handleUpdateLead(updated);
@@ -601,7 +604,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
   // Strict Dispatch Queue Eligibility:
   // - Unsent Day 0 leads: only if scheduled today (or overdue for email-only leads); never pull tomorrow's warmups
-  // - Sent leads: only if on exact Day 4, 8, or 14, OR overdue for their current unsent follow-up stage
+  // - Sent leads: ONLY if on exact Day 4, 8, or 14 from initialSentDate (stays hidden on all other days)
   const isStrictDispatchQueueEligible = (lead: ChannelLead, allowOverdueInitialEmail: boolean): boolean => {
     if (
       lead.isCompleted ||
@@ -631,12 +634,8 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
     const daysSinceSent = resolved.daysSinceInitial;
     const isExactCadenceDay = daysSinceSent === 4 || daysSinceSent === 8 || daysSinceSent === 14;
-    const isOverdueCurrentStage =
-      (resolved.stageNumber === 4 && daysSinceSent > 4) ||
-      (resolved.stageNumber === 8 && daysSinceSent > 8) ||
-      (resolved.stageNumber === 14 && daysSinceSent > 14);
 
-    return isExactCadenceDay || isOverdueCurrentStage;
+    return isExactCadenceDay;
   };
 
   // Channel Specific Lists for Dedicated Modals (Sorted strictly D14 -> D8 -> D4 -> D0)
@@ -1518,7 +1517,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-            <span>Needed {isSchedSaturday ? 'for Monday' : 'for tomorrow'}: {warmupTotalNeeded} Pending</span>
+            <span>Needed for tomorrow: {warmupTotalNeeded} Pending</span>
             <span className="text-amber-300">{warmupCompletedCount} Warmed Up</span>
           </div>
         </div>
@@ -1632,7 +1631,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
             <div className="p-4 rounded-2xl bg-slate-950/60 border border-white/5 space-y-1">
               <div className="text-base sm:text-lg font-bold text-amber-200 font-mono tracking-tight">
-                <span className="text-amber-300 font-black text-xl">{warmupTotalNeeded}</span> leads to warm up {isSchedSaturday ? 'for Monday' : 'for tomorrow'}
+                <span className="text-amber-300 font-black text-xl">{warmupTotalNeeded}</span> leads to warm up for tomorrow
               </div>
               <p className="text-[11px] text-slate-400">
                 Engage stories/posts today to unlock tomorrow's dispatch.
@@ -1668,9 +1667,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                 </span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                {isSchedSaturday
-                  ? 'Saturday Rest Mode: No warm-ups today since Sunday is a rest day.'
-                  : 'Engage these prospects today so they recognize your profile when outreach sends tomorrow.'}
+                Engage these prospects today so they recognize your profile when outreach sends tomorrow ({tomorrowStr}).
               </p>
             </div>
           </div>
@@ -1702,9 +1699,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
           <div className="py-6 text-center text-slate-500 text-xs flex flex-col items-center justify-center gap-1">
             <CheckCircle2 className="w-5 h-5 text-emerald-400 mb-1" />
             <span className="text-slate-300 font-semibold">
-              {isSchedSaturday
-                ? 'No warm-ups needed on Saturday. Sunday is rest!'
-                : 'All prospects scheduled for tomorrow are warmed up, or no leads scheduled for tomorrow.'}
+              All prospects scheduled for tomorrow ({tomorrowStr}) are warmed up, or no leads scheduled for tomorrow.
             </span>
           </div>
         ) : (
@@ -1712,13 +1707,14 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
             {warmupForTomorrowLeads.map((lead) => {
               const leadPlat = getLeadWarmupPlatform(lead);
               const leadCooldown = leadPlat === 'instagram' ? igWarmupCooldownMs : fbWarmupCooldownMs;
-              const isCooling = !lead.isWarmedUp && leadCooldown > 0;
+              const isLeadWarmedNow = lead.warmupStatus === 'warmed';
+              const isCooling = !isLeadWarmedNow && leadCooldown > 0;
 
               return (
                 <div
                   key={`warmup-${lead.channel}-${lead.id}`}
                   className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
-                    lead.isWarmedUp
+                    isLeadWarmedNow
                       ? 'border-emerald-500/40 bg-emerald-950/20 shadow-sm'
                       : isCooling
                       ? 'border-amber-500/40 bg-amber-950/15'
@@ -1773,7 +1769,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                     })()}
                   </div>
 
-                  {lead.isWarmedUp ? (
+                  {lead.warmupStatus === 'warmed' ? (
                     <button
                       type="button"
                       onClick={() => handleToggleLeadWarmup(lead)}
@@ -1923,10 +1919,8 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
               <div className="space-y-4">
                 {todayIgLeads.map((lead) => {
                   const cadenceStep = resolveLeadCadenceStep(lead, todayStr);
-                  const stageNumber: 0 | 4 | 8 | 14 =
-                    cadenceStep.stageNumber === 4 || cadenceStep.stageNumber === 8 || cadenceStep.stageNumber === 14
-                      ? cadenceStep.stageNumber
-                      : 0;
+                  if (cadenceStep.stageNumber === null) return null;
+                  const stageNumber: 0 | 4 | 8 | 14 = cadenceStep.stageNumber;
                   const stepNumber: 0 | 1 | 2 | 3 =
                     stageNumber === 0 ? 0 : stageNumber === 4 ? 1 : stageNumber === 8 ? 2 : 3;
 
@@ -2247,10 +2241,8 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
               <div className="space-y-4">
                 {todayCombinedLeads.map((lead) => {
                   const cadenceStep = resolveLeadCadenceStep(lead, todayStr);
-                  const stageNumber: 0 | 4 | 8 | 14 =
-                    cadenceStep.stageNumber === 4 || cadenceStep.stageNumber === 8 || cadenceStep.stageNumber === 14
-                      ? cadenceStep.stageNumber
-                      : 0;
+                  if (cadenceStep.stageNumber === null) return null;
+                  const stageNumber: 0 | 4 | 8 | 14 = cadenceStep.stageNumber;
                   const stepNumber: 0 | 1 | 2 | 3 =
                     stageNumber === 0 ? 0 : stageNumber === 4 ? 1 : stageNumber === 8 ? 2 : 3;
 
@@ -2480,7 +2472,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                     Warm-Up Command Center
                   </span>
                   <span className="text-xs font-mono text-amber-300 font-bold">
-                    Target: {isSchedSaturday ? 'Monday Outreach' : 'Tomorrow Outreach'}
+                    Target: Tomorrow Outreach ({tomorrowStr})
                   </span>
                 </div>
                 <h3 className="text-xl font-black text-white font-['Outfit'] mt-1">
@@ -2529,12 +2521,13 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                         .filter((l) => l.channel === 'instagram')
                         .map((lead) => {
                           const route = getBlindRouteLink(lead, 'warmup');
-                          const isCooling = !lead.isWarmedUp && igWarmupCooldownMs > 0;
+                          const isLeadWarmedNow = lead.warmupStatus === 'warmed';
+                          const isCooling = !isLeadWarmedNow && igWarmupCooldownMs > 0;
                           return (
                             <div
                               key={lead.id}
                               className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
-                                lead.isWarmedUp
+                                isLeadWarmedNow
                                   ? 'border-emerald-500/40 bg-emerald-950/20'
                                   : isCooling
                                   ? 'border-pink-500/30 bg-pink-950/15'
@@ -2568,7 +2561,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                                   </a>
                                 )}
                               </div>
-                              {lead.isWarmedUp ? (
+                              {isLeadWarmedNow ? (
                                 <button
                                   type="button"
                                   onClick={() => handleToggleLeadWarmup(lead)}
@@ -2625,12 +2618,13 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                         .filter((l) => l.channel !== 'instagram')
                         .map((lead) => {
                           const route = getBlindRouteLink(lead, 'warmup');
-                          const isCooling = !lead.isWarmedUp && fbWarmupCooldownMs > 0;
+                          const isLeadWarmedNow = lead.warmupStatus === 'warmed';
+                          const isCooling = !isLeadWarmedNow && fbWarmupCooldownMs > 0;
                           return (
                             <div
                               key={lead.id}
                               className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
-                                lead.isWarmedUp
+                                isLeadWarmedNow
                                   ? 'border-emerald-500/40 bg-emerald-950/20'
                                   : isCooling
                                   ? 'border-sky-500/30 bg-sky-950/15'
@@ -2664,7 +2658,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                                   </a>
                                 )}
                               </div>
-                              {lead.isWarmedUp ? (
+                              {isLeadWarmedNow ? (
                                 <button
                                   type="button"
                                   onClick={() => handleToggleLeadWarmup(lead)}

@@ -24,8 +24,8 @@ import { getChannelLabel, getBlindRouteLink } from '../../utils/channelStorage';
 import { TestLinkButton } from '../TestLinkButton';
 import {
   getLocalTodayStr,
-  normalizeToLocalDateStr,
-  getTomorrowWarmupTargetDate,
+  getLocalTomorrowStr,
+  toCleanDateStr,
   isLeadWarmed,
   isEmailOnlyLead,
   getTouchpointChannel,
@@ -94,7 +94,8 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
   const [copiedLeadId, setCopiedLeadId] = useState<string | null>(null);
 
   const todayStr = getLocalTodayStr();
-  const warmupTargetDate = getTomorrowWarmupTargetDate(todayStr);
+  const tomorrowStr = getLocalTomorrowStr();
+  const warmupTargetDate = tomorrowStr;
 
   const [year, month, day] = todayStr.split('-').map(Number);
   const todayDate = new Date(year, month - 1, day);
@@ -102,20 +103,21 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
   const isSaturday = todayDayOfWeek === 6;
   const isSunday = todayDayOfWeek === 0;
 
-  // STRICT RULE: "Warm-Up Today" queries leads where scheduledDate === tomorrow AND warmupStatus !== 'warmed'.
-  // Email-only leads do NOT require warm-up and are excluded.
-  const tomorrowSocialLeads = leads.filter((l) => {
-    if (l.isCompleted || l.initialSentDate) return false;
-    if (isEmailOnlyLead(l)) return false; // Strict: Warm-Up Tab must ONLY display Instagram & Facebook leads
-    if (getBlindRouteLink(l, 'warmup') === null) return false;
-    return normalizeToLocalDateStr(l.scheduledDate) === warmupTargetDate;
+  // STRICT RULE: "Warm-Up Today" queries leads where clean scheduledDate === tomorrowStr AND warmupStatus !== 'warmed'.
+  const warmUpToday = leads.filter((lead) => {
+    if (lead.isArchived || lead.cadenceStatus === 'cancelled') return false;
+    const cleanScheduledDate = toCleanDateStr(lead.scheduledDate);
+    return cleanScheduledDate === tomorrowStr && lead.warmupStatus !== 'warmed';
   });
 
-  const tomorrowLeads = tomorrowSocialLeads.filter(
-    (l) => l.warmupStatus !== 'warmed' && !isLeadWarmed(l)
-  );
+  const tomorrowLeads = warmUpToday;
 
-  const warmedCount = tomorrowSocialLeads.filter((l) => isLeadWarmed(l)).length;
+  const warmedCount = leads.filter((lead) => {
+    if (lead.isArchived || lead.cadenceStatus === 'cancelled') return false;
+    if (isEmailOnlyLead(lead)) return false;
+    const cleanScheduledDate = toCleanDateStr(lead.scheduledDate);
+    return cleanScheduledDate === tomorrowStr && lead.warmupStatus === 'warmed';
+  }).length;
   const lockedCount = tomorrowLeads.length;
   const selectedLead = tomorrowLeads.find((l) => l.id === selectedLeadId);
 

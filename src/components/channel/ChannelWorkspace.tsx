@@ -18,7 +18,7 @@ import { FollowupScheduleSubPage } from './FollowupScheduleSubPage';
 import { MockupSubPage } from './MockupSubPage';
 import { getChannelLabel } from '../../utils/channelStorage';
 import { getLeadEvidenceCount } from '../../utils/evidenceStorage';
-import { getLocalTodayStr, normalizeToLocalDateStr, getTomorrowWarmupTargetDate, isEmailOnlyLead, resolveLeadCadenceStep } from '../../utils/cadenceEngine';
+import { getLocalTodayStr, getLocalTomorrowStr, toCleanDateStr, resolveLeadCadenceStep } from '../../utils/cadenceEngine';
 
 interface ChannelWorkspaceProps {
   channel: MultiChannelType;
@@ -98,15 +98,14 @@ export function ChannelWorkspace({
 
   const theme = getChannelTheme();
   const todayStr = getLocalTodayStr();
-  const warmupTargetDate = getTomorrowWarmupTargetDate(todayStr);
+  const tomorrowStr = getLocalTomorrowStr();
 
-  // Leads scheduled for tomorrow that are not yet sent (excluding Email-only leads which require no warm-up)
-  const tomorrowLeadsNeedingWarmup = leads.filter(
-    (l) => !l.isCompleted && !l.initialSentDate && normalizeToLocalDateStr(l.scheduledDate) === warmupTargetDate && !isEmailOnlyLead(l)
-  );
-  const tomorrowLockedCount = tomorrowLeadsNeedingWarmup.filter(
-    (l) => l.warmupStatus !== 'warmed' && !l.isWarmedUp
-  ).length;
+  // Warm-up counter: leads where clean scheduledDate === tomorrowStr && warmupStatus !== 'warmed'
+  const tomorrowLockedCount = leads.filter((lead) => {
+    if (lead.isArchived || lead.cadenceStatus === 'cancelled') return false;
+    const cleanScheduledDate = toCleanDateStr(lead.scheduledDate);
+    return cleanScheduledDate === tomorrowStr && lead.warmupStatus !== 'warmed';
+  }).length;
 
   // Calculate actionable items in this channel for badge (Initial due + Day 4 + Day 8 + Day 14)
   const urgentCount = leads.filter((l) => {
@@ -129,7 +128,7 @@ export function ChannelWorkspace({
       id: 'schedule',
       label: 'Schedule',
       icon: <Calendar className="w-4 h-4" />,
-      badge: leads.filter((l) => !!l.scheduledDate).length,
+      badge: leads.filter((l) => Boolean(l.scheduledDate || l.initialSentDate)).length,
     },
     {
       id: 'mockup',
@@ -180,7 +179,7 @@ export function ChannelWorkspace({
           <div className="w-px h-6 bg-white/10" />
           <div>
             <span className="text-slate-500 block text-[10px] uppercase font-sans">Scheduled</span>
-            <strong className="text-slate-100 tabular-nums">{leads.filter((l) => !!l.scheduledDate).length}</strong>
+            <strong className="text-slate-100 tabular-nums">{leads.filter((l) => Boolean(l.scheduledDate || l.initialSentDate)).length}</strong>
           </div>
         </div>
       </div>

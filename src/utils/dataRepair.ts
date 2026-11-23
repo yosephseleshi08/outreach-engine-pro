@@ -146,23 +146,29 @@ export function repairSingleLeadEmail<T extends Partial<ChannelLead> & Record<st
   };
 }
 
-function normDateStr(rawInput?: string | null): string | undefined {
+export function normDateStr(rawInput?: unknown): string | undefined {
   if (!rawInput) return undefined;
+
+  if (rawInput instanceof Date) {
+    if (Number.isNaN(rawInput.getTime())) return undefined;
+    const y = rawInput.getFullYear();
+    const m = String(rawInput.getMonth() + 1).padStart(2, '0');
+    const d = String(rawInput.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
   const str = String(rawInput).trim();
   if (!str) return undefined;
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
-    return str;
+  // Strip ISO time component (e.g. "2026-11-24T00:00:00.000Z" -> "2026-11-24") without UTC shifting
+  const strippedT = str.includes('T') ? str.split('T')[0].trim() : str;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(strippedT)) {
+    return strippedT;
   }
 
-  if (str.includes('T') || str.includes(':') || str.includes('Z')) {
-    const parsed = new Date(str);
-    if (!Number.isNaN(parsed.getTime())) {
-      const y = parsed.getFullYear();
-      const m = String(parsed.getMonth() + 1).padStart(2, '0');
-      const d = String(parsed.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
+  const spaceTimeMatch = str.match(/^(\d{4}-\d{2}-\d{2})\s+/);
+  if (spaceTimeMatch) {
+    return spaceTimeMatch[1];
   }
 
   const mdyMatch = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
@@ -317,22 +323,29 @@ export function normalizeExistingLeadCadence<T extends Partial<ChannelLead> & Re
     changed = true;
   }
 
-  // 2. Standardize date strings on existing leads
+  // 2. Standardize date strings (and Date objects / ISO timestamps) to clean YYYY-MM-DD on existing leads
   const dateFields = [
     'initialSentDate',
     'followup1SentDate',
     'followup2SentDate',
     'followup3SentDate',
+    'followup1Date',
+    'followup2Date',
+    'followup3Date',
     'scheduledDate',
     'dispatchDate',
+    'warmedUpAt',
   ] as const;
 
   for (const field of dateFields) {
     const raw = next[field];
-    if (typeof raw === 'string' && raw.trim()) {
+    if (raw !== undefined && raw !== null && raw !== '') {
       const normalized = normDateStr(raw);
       if (normalized && normalized !== raw) {
         next[field] = normalized;
+        changed = true;
+      } else if (!normalized && raw instanceof Date) {
+        next[field] = undefined;
         changed = true;
       }
     }
