@@ -311,8 +311,9 @@ export function normalizeExistingLeadCadence<T extends Partial<ChannelLead> & Re
     }
   }
 
-  if (!next.isSequenceConfigured && initMsg && day4Msg && day8Msg && day14Msg) {
-    next.isSequenceConfigured = true;
+  const hasAll4 = Boolean(initMsg && day4Msg && day8Msg && day14Msg);
+  if (Boolean(next.isSequenceConfigured) !== hasAll4) {
+    next.isSequenceConfigured = hasAll4;
     changed = true;
   }
 

@@ -140,11 +140,6 @@ function SortableLeadRow({
   const dayStyle = getScheduleDayStyle(lead.scheduledDate);
   const isDueToday = isDateToday(lead.scheduledDate);
 
-  const numId = lead.numericId ?? extractLeadNumericId(lead, 0);
-  const isProtectedLead =
-    (channel === 'instagram' && numId <= 6) ||
-    (channel === 'combined' && numId <= 4);
-
   const initial = (lead.initialDM || lead.customPitch || '').trim();
   const d4 = (lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '').trim();
   const d8 = (lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '').trim();
@@ -156,9 +151,7 @@ function SortableLeadRow({
     d8.length > 0 &&
     d14.length > 0;
 
-  const isGreen =
-    (isProtectedLead && lead.isSequenceConfigured !== false) ||
-    (Boolean(lead.isSequenceConfigured) && hasAll4Sequences);
+  const isGreen = hasAll4Sequences;
 
   const dragStyle =
     transform || transition
@@ -429,7 +422,7 @@ export function LeadsSubPage({
   }, [leads, channel]);
 
   // One-time sanitization:
-  // 1. Keep the first 6 Instagram leads (ID 1..6) and first 4 Combined/Email leads (ID 1..4) green & untouched.
+  // 1. Keep the first 6 Instagram leads (ID 1..6) and first 4 Combined/Email leads (ID 1..4) sequences untouched, syncing readiness strictly from actual message content.
   // 2. Empty all 4 sequence messages for remaining leads (ID 7+ in IG, ID 5+ in Combined), but leave prompts intact!
   useEffect(() => {
     if (leads.length === 0) return;
@@ -444,11 +437,16 @@ export function LeadsSubPage({
         (channel === 'combined' && numId <= 4);
 
       if (isProtected) {
-        if (!lead.isSequenceConfigured) {
+        const hasAll4 =
+          Boolean((lead.initialDM || lead.customPitch || '').trim()) &&
+          Boolean((lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '').trim()) &&
+          Boolean((lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '').trim()) &&
+          Boolean((lead.breakupDM_Day14 || lead.breakupDM_Day30 || '').trim());
+        if (Boolean(lead.isSequenceConfigured) !== hasAll4) {
           modified = true;
           return {
             ...lead,
-            isSequenceConfigured: true,
+            isSequenceConfigured: hasAll4,
           };
         }
         return lead;
@@ -636,12 +634,6 @@ export function LeadsSubPage({
     const trimmedDay8 = day8Text.trim();
     const trimmedDay14 = day14Text.trim();
 
-    const numId = editingLead.numericId ?? extractLeadNumericId(editingLead, 0);
-    const isProtectedLead =
-      ((channel === 'instagram' && numId <= 6) ||
-        (channel === 'combined' && numId <= 4)) &&
-      editingLead.isSequenceConfigured !== false;
-
     // STRICT: Green finish button turns on ONLY if all 4 sequence steps have content!
     const isAll4Written =
       trimmedInitial.length > 0 &&
@@ -649,7 +641,7 @@ export function LeadsSubPage({
       trimmedDay8.length > 0 &&
       trimmedDay14.length > 0;
 
-    const isComplete = isProtectedLead || isAll4Written;
+    const isComplete = isAll4Written;
 
     const updated = leads.map((l) => {
       if (l.id === editingLead.id) {
@@ -1613,14 +1605,8 @@ export function LeadsSubPage({
                   <span>4-Step Multi-Channel Sequence</span>
                 </h4>
                 {(() => {
-                  const numId = editingLead.numericId ?? extractLeadNumericId(editingLead, 0);
-                  const isProtected =
-                    ((channel === 'instagram' && numId <= 6) ||
-                      (channel === 'combined' && numId <= 4)) &&
-                    editingLead.isSequenceConfigured !== false;
-
                   const filled = [initialDmText.trim(), day4Text.trim(), day8Text.trim(), day14Text.trim()].filter(Boolean).length;
-                  const isReady = isProtected || filled === 4;
+                  const isReady = filled === 4;
 
                   return (
                     <span className={`text-[10px] font-mono px-2.5 py-1 rounded-lg font-bold border flex items-center gap-1.5 ${
@@ -1722,7 +1708,11 @@ export function LeadsSubPage({
               {saveSuccess ? (
                 <span className="text-xs text-emerald-400 font-bold font-mono flex items-center gap-1.5 animate-in fade-in">
                   <Check className="w-4 h-4 text-emerald-400" />
-                  <span>All 4 sequence messages saved to lead!</span>
+                  <span>
+                    {initialDmText.trim() && day4Text.trim() && day8Text.trim() && day14Text.trim()
+                      ? 'All 4 sequence messages saved to lead!'
+                      : 'Sequence draft saved (fill all 4 steps to turn Green).'}
+                  </span>
                 </span>
               ) : (
                 <span className="text-[11px] text-slate-500">

@@ -599,59 +599,54 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     });
   };
 
+  // Strict Dispatch Queue Eligibility:
+  // - Unsent Day 0 leads: only if scheduled today (or overdue for email-only leads); never pull tomorrow's warmups
+  // - Sent leads: only if on exact Day 4, 8, or 14, OR overdue for their current unsent follow-up stage
+  const isStrictDispatchQueueEligible = (lead: ChannelLead, allowOverdueInitialEmail: boolean): boolean => {
+    if (
+      lead.isCompleted ||
+      lead.isArchived ||
+      lead.cadenceStatus === 'cancelled' ||
+      lead.leadStatus === 'replied' ||
+      lead.leadStatus === 'completed'
+    ) {
+      return false;
+    }
+    if (isLeadDismissedToday(lead)) return false;
+
+    const resolved = resolveLeadCadenceStep(lead, todayStr);
+
+    if (resolved.stageNumber === 0) {
+      if (!lead.scheduledDate) return false;
+      const isScheduledToday = isDateToday(lead.scheduledDate);
+      if (allowOverdueInitialEmail && isEmailOnlyLead(lead)) {
+        return isScheduledToday || isDateOverdue(lead.scheduledDate);
+      }
+      return isScheduledToday;
+    }
+
+    if (!resolved.isFollowupDue || resolved.stageNumber === null) {
+      return false;
+    }
+
+    const daysSinceSent = resolved.daysSinceInitial;
+    const isExactCadenceDay = daysSinceSent === 4 || daysSinceSent === 8 || daysSinceSent === 14;
+    const isOverdueCurrentStage =
+      (resolved.stageNumber === 4 && daysSinceSent > 4) ||
+      (resolved.stageNumber === 8 && daysSinceSent > 8) ||
+      (resolved.stageNumber === 14 && daysSinceSent > 14);
+
+    return isExactCadenceDay || isOverdueCurrentStage;
+  };
+
   // Channel Specific Lists for Dedicated Modals (Sorted strictly D14 -> D8 -> D4 -> D0)
   const todayIgLeads = useMemo(() => {
-    const filtered = instagramLeads.filter((l) => {
-      if (
-        l.isCompleted ||
-        l.isArchived ||
-        l.cadenceStatus === 'cancelled' ||
-        l.leadStatus === 'replied' ||
-        l.leadStatus === 'completed'
-      ) {
-        return false;
-      }
-      if (isLeadDismissedToday(l)) return false;
-
-      const resolved = resolveLeadCadenceStep(l, todayStr);
-      // Initial due: scheduled for today OR warmed today (showing midnight lock)
-      if (resolved.stageNumber === 0) {
-        if (!l.scheduledDate) return false;
-        const isScheduledToday = isDateToday(l.scheduledDate);
-        const isWarmedToday = isLeadWarmedToday(l, todayStr);
-        return isScheduledToday || isWarmedToday;
-      }
-      // Follow-ups due (Day 4, Day 8, Day 14 - including skipped days)
-      return resolved.isFollowupDue;
-    });
+    const filtered = instagramLeads.filter((l) => isStrictDispatchQueueEligible(l, false));
     return sortLeadsByWavePriority(filtered);
   }, [instagramLeads, todayStr, warmupOverrideActive]);
 
   const todayCombinedLeads = useMemo(() => {
-    const filtered = effectiveCombinedLeads.filter((l) => {
-      if (
-        l.isCompleted ||
-        l.isArchived ||
-        l.cadenceStatus === 'cancelled' ||
-        l.leadStatus === 'replied' ||
-        l.leadStatus === 'completed'
-      ) {
-        return false;
-      }
-      if (isLeadDismissedToday(l)) return false;
-
-      const resolved = resolveLeadCadenceStep(l, todayStr);
-      // Initial due: scheduled for today OR warmed today
-      if (resolved.stageNumber === 0) {
-        if (!l.scheduledDate) return false;
-        const isScheduledToday = isDateToday(l.scheduledDate);
-        const isWarmedToday = isLeadWarmedToday(l, todayStr);
-        if (isEmailOnlyLead(l)) return isScheduledToday || isDateOverdue(l.scheduledDate);
-        return isScheduledToday || isWarmedToday;
-      }
-      // Follow-ups due (Day 4, Day 8, Day 14 - including skipped days)
-      return resolved.isFollowupDue;
-    });
+    const filtered = effectiveCombinedLeads.filter((l) => isStrictDispatchQueueEligible(l, true));
     return sortLeadsByWavePriority(filtered);
   }, [effectiveCombinedLeads, todayStr, warmupOverrideActive]);
 
@@ -1954,10 +1949,12 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
                   const stepBadgeLabel =
                     stageNumber === 0
-                      ? 'Day 0 Initial IG DM'
-                      : stageNumber === 14
-                      ? 'Day 14 Follow-Up (Breakup)'
-                      : `Day ${stageNumber} Follow-Up`;
+                      ? 'Day 0 Initial'
+                      : stageNumber === 4
+                      ? 'Day 4 Follow-Up'
+                      : stageNumber === 8
+                      ? 'Day 8 Follow-Up'
+                      : 'Day 14 Breakup';
 
                   return (
                     <div
@@ -1976,11 +1973,6 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                             <Instagram className="w-3 h-3 shrink-0" />
                             <span>{stepBadgeLabel}</span>
                           </span>
-                          {stageNumber !== 0 && cadenceStep.daysSinceInitial > 0 && (
-                            <span className="text-[10px] font-mono text-slate-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">
-                              Day {cadenceStep.daysSinceInitial} since Initial
-                            </span>
-                          )}
                         </div>
 
                         {/* Requirement 6: Blind Route Link (ONLY one link shown) */}
@@ -2007,6 +1999,8 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                           <span>
                             {stageNumber === 0
                               ? 'Pre-Configured Message for Today (Day 0 Initial):'
+                              : stageNumber === 14
+                              ? 'Pre-Configured Message for Today (Day 14 Breakup):'
                               : `Pre-Configured Message for Today (Day ${stageNumber} Follow-Up):`}
                           </span>
                           <button
@@ -2280,10 +2274,12 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
                   const stepBadgeLabel =
                     stageNumber === 0
-                      ? 'Day 0 Initial Email'
-                      : stageNumber === 14
-                      ? 'Day 14 Follow-Up (Breakup)'
-                      : `Day ${stageNumber} Follow-Up`;
+                      ? 'Day 0 Initial'
+                      : stageNumber === 4
+                      ? 'Day 4 Follow-Up'
+                      : stageNumber === 8
+                      ? 'Day 8 Follow-Up'
+                      : 'Day 14 Breakup';
 
                   return (
                     <div
@@ -2302,11 +2298,6 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                             <Mail className="w-3 h-3 shrink-0" />
                             <span>{stepBadgeLabel}</span>
                           </span>
-                          {stageNumber !== 0 && cadenceStep.daysSinceInitial > 0 && (
-                            <span className="text-[10px] font-mono text-slate-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">
-                              Day {cadenceStep.daysSinceInitial} since Initial
-                            </span>
-                          )}
                         </div>
 
                         {/* Requirement 6: Blind Route Link / Copy Email for Manual Verification */}
@@ -2341,6 +2332,8 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                           <span>
                             {stageNumber === 0
                               ? 'Pre-Configured Message for Today (Day 0 Initial):'
+                              : stageNumber === 14
+                              ? 'Pre-Configured Message for Today (Day 14 Breakup):'
                               : `Pre-Configured Message for Today (Day ${stageNumber} Follow-Up):`}
                           </span>
                           <button
