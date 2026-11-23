@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Calendar,
   RotateCcw,
@@ -35,6 +35,17 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
   const [showAutoScheduleModal, setShowAutoScheduleModal] = useState(false);
 
   const todayStr = getLocalTodayStr();
+
+  const sortedLeads = useMemo(() => {
+    const getNumericId = (lead: ChannelLead) => {
+      if (typeof lead.numericId === 'number' && Number.isFinite(lead.numericId) && lead.numericId > 0) {
+        return lead.numericId;
+      }
+      const match = String(lead.id || '').match(/(\d+)$/);
+      return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+    };
+    return [...leads].sort((a, b) => getNumericId(a) - getNumericId(b));
+  }, [leads]);
 
   const handleDateChange = (leadId: string, newDate: string) => {
     const cleanInput = toCleanDateStr(newDate);
@@ -235,7 +246,7 @@ export function ScheduleSubPage({ channel, leads, onUpdateLeads }: ScheduleSubPa
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {leads.map((lead) => {
+                {sortedLeads.map((lead) => {
                   const normInitial = normalizeToLocalDateStr(lead.initialSentDate);
                   const isPastInitial = Boolean(normInitial && normInitial < todayStr);
                   const effectiveDate = lead.scheduledDate || lead.initialSentDate;

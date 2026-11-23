@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   Upload,
   Camera,
@@ -118,19 +118,32 @@ export function MockupSubPage({ channel, leads, onUpdateLeads }: MockupSubPagePr
     0
   );
 
-  const filteredLeads = leads.filter((lead) => {
-    const count = getLeadEvidenceImages(lead).length;
-    if (filterMode === 'with_evidence' && count === 0) return false;
-    if (filterMode === 'missing' && count > 0) return false;
+  const sortedLeads = useMemo(() => {
+    const getNumericId = (lead: ChannelLead) => {
+      if (typeof lead.numericId === 'number' && Number.isFinite(lead.numericId) && lead.numericId > 0) {
+        return lead.numericId;
+      }
+      const match = String(lead.id || '').match(/(\d+)$/);
+      return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+    };
+    return [...leads].sort((a, b) => getNumericId(a) - getNumericId(b));
+  }, [leads]);
 
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      lead.name.toLowerCase().includes(q) ||
-      lead.id.toLowerCase().includes(q) ||
-      (lead.link || '').toLowerCase().includes(q)
-    );
-  });
+  const filteredLeads = useMemo(() => {
+    return sortedLeads.filter((lead) => {
+      const count = getLeadEvidenceImages(lead).length;
+      if (filterMode === 'with_evidence' && count === 0) return false;
+      if (filterMode === 'missing' && count > 0) return false;
+
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        lead.name.toLowerCase().includes(q) ||
+        lead.id.toLowerCase().includes(q) ||
+        (lead.link || '').toLowerCase().includes(q)
+      );
+    });
+  }, [sortedLeads, filterMode, searchQuery]);
 
   return (
     <div className="space-y-6">
