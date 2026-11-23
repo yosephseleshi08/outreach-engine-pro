@@ -41,7 +41,12 @@ import {
   getQuotaSettings,
 } from '../utils/historyStorage';
 import { getSupplyGapBadgeMeta } from '../utils/executionTiers';
-import { getOrphanedCadences } from '../utils/leadLifecycle';
+import {
+  getOrphanedCadences,
+  isLocalSunday,
+  isDateFrozenDirect,
+  shiftDueDateOffRestDay,
+} from '../utils/leadLifecycle';
 import { sortLeadsByWavePriority, getIntakeThrottleWarning } from '../utils/dailyObligation';
 import {
   playSuccessChime,
@@ -77,6 +82,7 @@ import {
   isLeadWarmedBeforeToday,
   isLeadWarmedToday,
   getTomorrowWarmupTargetDate,
+  getScheduleDayStyle,
   isManualWarmupOverrideEnabled,
   setManualWarmupOverride,
 } from '../utils/cadenceEngine';
@@ -374,32 +380,61 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
   const totalTasksCompletedToday = initialSentTodayCount + followupsSentTodayCount;
 
   // Automated Daily Rollover:
-  // If an initial social lead is scheduled for today or earlier, but was NOT warmed up yesterday,
-  // it CANNOT be sent today. It automatically rolls over to tomorrow (the next dispatch day)
-  // so the user can warm it up today in the Warm-Up queue!
+  // 1. If an initial social lead is scheduled for today or earlier, but was NOT warmed up yesterday,
+  //    it CANNOT be sent today. It rolls forward to the next active dispatch day (targetTomorrow)
+  //    so the user can warm it up today in the Warm-Up queue.
+  // 2. If a future social lead accidentally lands on a Sunday or frozen date, shift it off that rest day.
   useEffect(() => {
     const targetTomorrow = getTomorrowWarmupTargetDate(todayStr);
-    let igNeedsUpdate = false;
-    const nextIgLeads = instagramLeads.map((lead) => {
+    const applySocialRollover = (lead: ChannelLead): ChannelLead | null => {
       if (
         lead.isCompleted ||
         lead.isArchived ||
         lead.cadenceStatus === 'cancelled' ||
         resolveLeadCadenceStep(lead, todayStr).stageNumber !== 0
       ) {
-        return lead;
+        return null;
       }
-      if (!lead.scheduledDate) return lead;
-      // If scheduled for today or overdue, but wasn't warmed up before today
-      if (lead.scheduledDate <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
-        igNeedsUpdate = true;
+      if (isEmailOnlyLead(lead)) return null;
+      const normSched = normalizeToLocalDateStr(lead.scheduledDate);
+      if (!normSched) return null;
+
+      if (normSched <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
         const warmedToday = isLeadWarmedToday(lead, todayStr);
+        if (
+          normSched === targetTomorrow &&
+          Boolean(lead.isWarmedUp) === warmedToday &&
+          lead.warmupStatus === (warmedToday ? 'warmed' : 'locked')
+        ) {
+          return null;
+        }
         return {
           ...lead,
           scheduledDate: targetTomorrow,
           warmupStatus: warmedToday ? ('warmed' as const) : ('locked' as const),
           isWarmedUp: warmedToday,
         };
+      }
+
+      if (normSched > todayStr && (isLocalSunday(normSched) || isDateFrozenDirect(normSched))) {
+        const shiftedDate = shiftDueDateOffRestDay(normSched);
+        if (shiftedDate !== normSched && !isLocalSunday(shiftedDate) && !isDateFrozenDirect(shiftedDate)) {
+          return {
+            ...lead,
+            scheduledDate: shiftedDate,
+          };
+        }
+      }
+
+      return null;
+    };
+
+    let igNeedsUpdate = false;
+    const nextIgLeads = instagramLeads.map((lead) => {
+      const updated = applySocialRollover(lead);
+      if (updated) {
+        igNeedsUpdate = true;
+        return updated;
       }
       return lead;
     });
@@ -411,25 +446,10 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     if (onUpdateCombinedLeads) {
       let combinedNeedsUpdate = false;
       const nextCombinedLeads = effectiveCombinedLeads.map((lead) => {
-        if (
-          lead.isCompleted ||
-          lead.isArchived ||
-          lead.cadenceStatus === 'cancelled' ||
-          resolveLeadCadenceStep(lead, todayStr).stageNumber !== 0
-        ) {
-          return lead;
-        }
-        if (!lead.scheduledDate) return lead;
-        if (isEmailOnlyLead(lead)) return lead;
-        if (lead.scheduledDate <= todayStr && !isLeadWarmedBeforeToday(lead, todayStr)) {
+        const updated = applySocialRollover(lead);
+        if (updated) {
           combinedNeedsUpdate = true;
-          const warmedToday = isLeadWarmedToday(lead, todayStr);
-          return {
-            ...lead,
-            scheduledDate: targetTomorrow,
-            warmupStatus: warmedToday ? ('warmed' as const) : ('locked' as const),
-            isWarmedUp: warmedToday,
-          };
+          return updated;
         }
         return lead;
       });
@@ -438,11 +458,12 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
         onUpdateCombinedLeads(nextCombinedLeads);
       }
     }
-  }, [todayStr]);
+  }, [todayStr, instagramLeads, effectiveCombinedLeads]);
 
   // 2. Initial Outreach Due Today
   // STRICT RULE: Social leads (IG / FB) MUST have been warmed up BEFORE today (yesterday or older).
   // Same-day warm-up or un-warmed leads cannot be dispatched today.
+  // Overdue social leads that WERE warmed before today stay eligible for dispatch rather than vanishing.
   const newOutreachDueToday = sortLeadsByWavePriority(
     allLeads.filter((l) => {
       if (l.isCompleted || l.isArchived || l.cadenceStatus === 'cancelled') return false;
@@ -452,7 +473,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
       if (isEmailOnlyLead(l)) {
         return isDateToday(l.scheduledDate) || isDateOverdue(l.scheduledDate);
       }
-      if (!isDateToday(l.scheduledDate)) return false;
+      if (!isDateToday(l.scheduledDate) && !isDateOverdue(l.scheduledDate)) return false;
       return isLeadWarmedBeforeToday(l, todayStr);
     })
   );
@@ -498,12 +519,16 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     [todayStr, allLeads, ledgerTick]
   );
 
-  // 4. WARM-UP NEEDS TODAY (Tracking for tomorrow's dispatch)
+  // 4. WARM-UP NEEDS TODAY (Tracking for next active dispatch day, skipping Sundays & frozen dates)
   const [schedY, schedM, schedD] = todayStr.split('-').map(Number);
   const schedTodayDate = new Date(schedY, schedM - 1, schedD);
   const schedDayOfWeek = schedTodayDate.getDay();
   const isSchedSaturday = schedDayOfWeek === 6;
   const warmupTargetDateStr = getTomorrowWarmupTargetDate(todayStr);
+  const isTargetDirectTomorrow = warmupTargetDateStr === addDays(todayStr, 1);
+  const warmupTargetDayName = getScheduleDayStyle(warmupTargetDateStr).dayName;
+  const warmupTargetPrepLabel = isTargetDirectTomorrow ? 'tomorrow' : warmupTargetDayName;
+  const warmupTargetTitleLabel = isTargetDirectTomorrow ? 'Tomorrow' : warmupTargetDayName;
 
   // All tomorrow-scheduled social leads eligible for warm-up (Email-only leads are excluded)
   const tomorrowSocialWarmupLeads = useMemo(() => {
@@ -557,16 +582,18 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
     const nextVal = !isCurrentlyWarmed;
     const targetTomorrow = getTomorrowWarmupTargetDate(todayStr);
+    const normSched = normalizeToLocalDateStr(lead.scheduledDate);
+    const nextScheduledDate = nextVal
+      ? (normSched && normSched > todayStr ? shiftDueDateOffRestDay(normSched) : targetTomorrow)
+      : lead.scheduledDate;
 
     const updated: ChannelLead = {
       ...lead,
       warmupStatus: nextVal ? 'warmed' : 'locked',
       isWarmedUp: nextVal,
       warmedUpAt: nextVal ? todayStr : undefined,
-      // If warming up today, strictly set scheduled date to tomorrow's dispatch date
-      scheduledDate: nextVal
-        ? (lead.scheduledDate && lead.scheduledDate > todayStr ? lead.scheduledDate : targetTomorrow)
-        : lead.scheduledDate,
+      // If warming up today, assign a valid future active dispatch date (never today, Sunday, or frozen)
+      scheduledDate: nextScheduledDate,
     };
     handleUpdateLead(updated);
 
@@ -619,8 +646,12 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     if (resolved.stageNumber === 0) {
       if (!lead.scheduledDate) return false;
       const isScheduledToday = isDateToday(lead.scheduledDate);
+      const isScheduledOverdue = isDateOverdue(lead.scheduledDate);
       if (allowOverdueInitialEmail && isEmailOnlyLead(lead)) {
-        return isScheduledToday || isDateOverdue(lead.scheduledDate);
+        return isScheduledToday || isScheduledOverdue;
+      }
+      if (isScheduledOverdue && isLeadWarmedBeforeToday(lead, todayStr)) {
+        return true;
       }
       return isScheduledToday;
     }
@@ -630,13 +661,12 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     }
 
     const daysSinceSent = resolved.daysSinceInitial;
-    const isExactCadenceDay = daysSinceSent === 4 || daysSinceSent === 8 || daysSinceSent === 14;
-    const isOverdueCurrentStage =
-      (resolved.stageNumber === 4 && daysSinceSent > 4) ||
-      (resolved.stageNumber === 8 && daysSinceSent > 8) ||
-      (resolved.stageNumber === 14 && daysSinceSent > 14);
+    const isExactCadenceDay =
+      (daysSinceSent === 4 && resolved.stageNumber === 4) ||
+      (daysSinceSent === 8 && resolved.stageNumber === 8) ||
+      (daysSinceSent === 14 && resolved.stageNumber === 14);
 
-    return isExactCadenceDay || isOverdueCurrentStage;
+    return isExactCadenceDay;
   };
 
   // Channel Specific Lists for Dedicated Modals (Sorted strictly D14 -> D8 -> D4 -> D0)
@@ -1308,9 +1338,9 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
               </div>
               <p className="text-xs text-slate-300 leading-snug">
                 {warmupTotalNeeded > 0
-                  ? `${warmupTotalNeeded} leads need warm-up today to unlock tomorrow's dispatch.`
+                  ? `${warmupTotalNeeded} leads need warm-up today to unlock ${warmupTargetPrepLabel}'s dispatch.`
                   : warmupTotalScheduled > 0
-                  ? 'All prospects scheduled for tomorrow are verified and unlocked!'
+                  ? `All prospects scheduled for ${warmupTargetPrepLabel} are verified and unlocked!`
                   : 'No warm-ups needed today.'}
               </p>
             </div>
@@ -1325,7 +1355,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
               </button>
             ) : (
               <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1 py-1">
-                <Check className="w-3.5 h-3.5" /> All Tomorrow Leads Prepped
+                <Check className="w-3.5 h-3.5" /> All {warmupTargetTitleLabel} Leads Prepped
               </span>
             )}
           </div>
@@ -1518,7 +1548,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-            <span>Needed {isSchedSaturday ? 'for Monday' : 'for tomorrow'}: {warmupTotalNeeded} Pending</span>
+            <span>Needed for {warmupTargetPrepLabel}: {warmupTotalNeeded} Pending</span>
             <span className="text-amber-300">{warmupCompletedCount} Warmed Up</span>
           </div>
         </div>
@@ -1622,7 +1652,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-white text-lg font-['Outfit']">Warm-Up Needs Today</h3>
-                  <span className="text-xs font-mono text-amber-300/80 uppercase font-semibold">Prep for Tomorrow</span>
+                  <span className="text-xs font-mono text-amber-300/80 uppercase font-semibold">Prep for {warmupTargetTitleLabel}</span>
                 </div>
               </div>
               <span className="px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-bold font-mono">
@@ -1632,10 +1662,10 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
             <div className="p-4 rounded-2xl bg-slate-950/60 border border-white/5 space-y-1">
               <div className="text-base sm:text-lg font-bold text-amber-200 font-mono tracking-tight">
-                <span className="text-amber-300 font-black text-xl">{warmupTotalNeeded}</span> leads to warm up {isSchedSaturday ? 'for Monday' : 'for tomorrow'}
+                <span className="text-amber-300 font-black text-xl">{warmupTotalNeeded}</span> leads to warm up for {warmupTargetPrepLabel}
               </div>
               <p className="text-[11px] text-slate-400">
-                Engage stories/posts today to unlock tomorrow's dispatch.
+                Engage stories/posts today to unlock {warmupTargetPrepLabel}&apos;s dispatch.
               </p>
             </div>
           </div>
@@ -1662,14 +1692,16 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
             </span>
             <div>
               <h2 className="text-base sm:text-lg font-black text-white font-['Outfit'] flex items-center gap-2">
-                <span>🔥 Warm Up for Tomorrow</span>
+                <span>🔥 Warm Up for {warmupTargetTitleLabel}</span>
                 <span className="text-xs font-mono font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded border border-amber-500/30">
                   {warmupTotalNeeded} Due Today
                 </span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
                 {isSchedSaturday
-                  ? 'Saturday Rest Mode: No warm-ups today since Sunday is a rest day.'
+                  ? `Sunday is Rest Day — engage these ${warmupTargetDayName} prospects today so they recognize your profile before dispatch.`
+                  : !isTargetDirectTomorrow
+                  ? `Engage these ${warmupTargetDayName} prospects today so they recognize your profile when outreach resumes.`
                   : 'Engage these prospects today so they recognize your profile when outreach sends tomorrow.'}
               </p>
             </div>
@@ -1702,9 +1734,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
           <div className="py-6 text-center text-slate-500 text-xs flex flex-col items-center justify-center gap-1">
             <CheckCircle2 className="w-5 h-5 text-emerald-400 mb-1" />
             <span className="text-slate-300 font-semibold">
-              {isSchedSaturday
-                ? 'No warm-ups needed on Saturday. Sunday is rest!'
-                : 'All prospects scheduled for tomorrow are warmed up, or no leads scheduled for tomorrow.'}
+              All prospects scheduled for {warmupTargetPrepLabel} are warmed up, or no leads scheduled for {warmupTargetPrepLabel}.
             </span>
           </div>
         ) : (
@@ -2480,11 +2510,11 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                     Warm-Up Command Center
                   </span>
                   <span className="text-xs font-mono text-amber-300 font-bold">
-                    Target: {isSchedSaturday ? 'Monday Outreach' : 'Tomorrow Outreach'}
+                    Target: {warmupTargetTitleLabel} Outreach ({warmupTargetDateStr})
                   </span>
                 </div>
                 <h3 className="text-xl font-black text-white font-['Outfit'] mt-1">
-                  Engage Prospects Scheduled for Tomorrow ({warmupTotalNeeded})
+                  Engage Prospects Scheduled for {warmupTargetTitleLabel} ({warmupTotalNeeded})
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Categorized by Instagram and Combined leads. Email-only leads do not require social warm-up and are excluded.
@@ -2501,7 +2531,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 
             {warmupTotalNeeded === 0 ? (
               <div className="py-12 text-center text-slate-500 text-sm">
-                No leads needing warm-up for tomorrow. You are fully prepped!
+                No leads needing warm-up for {warmupTargetPrepLabel}. You are fully prepped!
               </div>
             ) : (
               <div className="space-y-6">
@@ -2510,7 +2540,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/5 pb-1">
                     <div className="flex items-center gap-2 text-pink-300 font-bold text-sm font-['Outfit']">
                       <Instagram className="w-4 h-4" />
-                      <span>Instagram Leads (for Tomorrow)</span>
+                      <span>Instagram Leads (for {warmupTargetTitleLabel})</span>
                     </div>
                     {igWarmupCooldownMs > 0 && (
                       <div
@@ -2522,7 +2552,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                     )}
                   </div>
                   {warmupForTomorrowLeads.filter((l) => l.channel === 'instagram').length === 0 ? (
-                    <p className="text-xs text-slate-500 italic pl-1">No Instagram leads scheduled for tomorrow.</p>
+                    <p className="text-xs text-slate-500 italic pl-1">No Instagram leads scheduled for {warmupTargetPrepLabel}.</p>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {warmupForTomorrowLeads
@@ -2606,7 +2636,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/5 pb-1">
                     <div className="flex items-center gap-2 text-sky-300 font-bold text-sm font-['Outfit']">
                       <Facebook className="w-4 h-4" />
-                      <span>Combined Outreach (Facebook - for Tomorrow)</span>
+                      <span>Combined Outreach (Facebook - for {warmupTargetTitleLabel})</span>
                     </div>
                     {fbWarmupCooldownMs > 0 && (
                       <div
@@ -2618,7 +2648,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                     )}
                   </div>
                   {warmupForTomorrowLeads.filter((l) => l.channel !== 'instagram').length === 0 ? (
-                    <p className="text-xs text-slate-500 italic pl-1">No Facebook leads scheduled for tomorrow.</p>
+                    <p className="text-xs text-slate-500 italic pl-1">No Facebook leads scheduled for {warmupTargetPrepLabel}.</p>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {warmupForTomorrowLeads

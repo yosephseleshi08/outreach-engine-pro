@@ -231,7 +231,7 @@ export type LeadLockReason = 'warmed' | 'sent' | null;
 export function getLeadLockReason(lead: ChannelLead): LeadLockReason {
   if (!lead) return null;
 
-  const isSent = Boolean(
+  const isInPastOrSentSequence = Boolean(
     lead.initialSentDate ||
       lead.dmSent ||
       lead.dmSentAt ||
@@ -245,7 +245,7 @@ export function getLeadLockReason(lead: ChannelLead): LeadLockReason {
       (lead.followupCount && lead.followupCount > 0) ||
       (lead.leadStatus && lead.leadStatus !== 'not_sent')
   );
-  if (isSent) return 'sent';
+  if (isInPastOrSentSequence) return 'sent';
 
   const isWarmed = Boolean(
     hasSocialWarmupLink(lead) &&

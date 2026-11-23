@@ -137,14 +137,16 @@ function isEmailOnlyCheck(lead: ChannelLead): boolean {
 }
 
 function isWarmedBeforeDate(lead: ChannelLead, dateStr: string): boolean {
+  if (isEmailOnlyCheck(lead)) return true;
   if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
     if (localStorage.getItem('crm_warmup_manual_override_unlocked') === 'true') {
       return true;
     }
   }
   if (!lead.isWarmedUp && lead.warmupStatus !== 'warmed') return false;
+  const normDate = toLocalDateString(dateStr);
   const warmedDate = toLocalDateString(lead.warmedUpAt);
-  return Boolean(warmedDate && warmedDate < dateStr);
+  return Boolean(normDate && warmedDate && warmedDate < normDate);
 }
 
 function getDaysElapsedLocal(fromDateStr: string, toDateStr: string): number {
@@ -268,16 +270,12 @@ function countFollowupsDueForDate(leads: ChannelLead[], dateStr: string): number
 
     const daysElapsed = effectiveInitial
       ? getDaysElapsedLocal(effectiveInitial, dateStr)
-      : fuCount === 0
-      ? 4
-      : fuCount === 1
-      ? 8
-      : 14;
+      : 0;
 
     if (
-      (daysElapsed >= 14 && fuCount <= 2) ||
-      (daysElapsed >= 8 && fuCount <= 1) ||
-      (daysElapsed >= 4 && fuCount === 0)
+      (daysElapsed === 14 && fuCount <= 2) ||
+      (daysElapsed === 8 && fuCount <= 1) ||
+      (daysElapsed === 4 && fuCount === 0)
     ) {
       count++;
     }
@@ -345,19 +343,19 @@ export function computeOpenObligationSnapshot(
     backstage = stored.backstage;
   }
 
-  // Due D0 IG leads
+  // Due D0 IG leads (include overdue leads that were already warmed before today)
   const igDueCount = activeInstagram.filter((l) => {
     if (l.isCompleted || l.cadenceStatus === 'cancelled' || l.initialSentDate) return false;
     if (!l.scheduledDate) return false;
     const sd = toLocalDateString(l.scheduledDate);
     if (!sd) return false;
     if (normDate === todayStr) {
-      return sd === normDate && isWarmedBeforeDate(l, normDate);
+      return sd <= normDate && isWarmedBeforeDate(l, normDate);
     }
     return sd === normDate;
   }).length;
 
-  // Due D0 Combined leads (Email due <= normDate, FB due on normDate & warmed)
+  // Due D0 Combined leads (Email due <= normDate, FB due <= normDate today if already warmed)
   const combinedDueCount = activeCombined.filter((l) => {
     if (l.isCompleted || l.cadenceStatus === 'cancelled' || l.initialSentDate) return false;
     if (!l.scheduledDate) return false;
@@ -367,7 +365,7 @@ export function computeOpenObligationSnapshot(
       return sd <= normDate;
     }
     if (normDate === todayStr) {
-      return sd === normDate && isWarmedBeforeDate(l, normDate);
+      return sd <= normDate && isWarmedBeforeDate(l, normDate);
     }
     return sd === normDate;
   }).length;

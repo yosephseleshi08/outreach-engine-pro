@@ -438,8 +438,10 @@ export interface ResolvedCadenceStep {
 }
 
 /**
- * Calculates the lead's actual current cadence step based on days passed since initialSentDate
- * and followupCount, automatically advancing past skipped days (e.g. missed Day 4 -> Day 8 on Day 8+).
+ * Calculates the lead's exact cadence step based on the integer day difference
+ * between today and initialSentDate (Day 4, Day 8, or Day 14).
+ * Leads not on an exact cadence day remain hidden (stageNumber: null, isFollowupDue: false)
+ * until their next exact cadence day arrives.
  */
 export function resolveLeadCadenceStep(
   lead: ChannelLead,
@@ -510,14 +512,10 @@ export function resolveLeadCadenceStep(
 
   const daysSinceInitial = effectiveInitial
     ? Math.max(0, getDayDifference(today, effectiveInitial))
-    : fuCount === 0
-    ? 4
-    : fuCount === 1
-    ? 8
-    : 14;
+    : 0;
 
-  // Day 14 = 14+ days passed and followupCount <= 2 (handles skipped Day 4 or Day 8)
-  if (daysSinceInitial >= 14 && fuCount <= 2) {
+  // Day 14 = exactly 14 days passed and followupCount <= 2
+  if (daysSinceInitial === 14 && fuCount <= 2) {
     return {
       stageNumber: 14,
       step: 3,
@@ -527,8 +525,8 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Day 8 = 8+ days passed and followupCount <= 1 (handles skipped Day 4)
-  if (daysSinceInitial >= 8 && fuCount <= 1) {
+  // Day 8 = exactly 8 days passed and followupCount <= 1
+  if (daysSinceInitial === 8 && fuCount <= 1) {
     return {
       stageNumber: 8,
       step: 2,
@@ -538,8 +536,8 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Day 4 = 4+ days passed and followupCount === 0
-  if (daysSinceInitial >= 4 && fuCount === 0) {
+  // Day 4 = exactly 4 days passed and followupCount === 0
+  if (daysSinceInitial === 4 && fuCount === 0) {
     return {
       stageNumber: 4,
       step: 1,
@@ -549,7 +547,7 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Waiting for next follow-up window
+  // Waiting for next exact cadence day (4, 8, or 14)
   return {
     stageNumber: null,
     step: null,
@@ -624,6 +622,7 @@ export function revertInitialSent(lead: ChannelLead): ChannelLead {
     followup3Date: undefined,
     followupCount: 0,
     leadStatus: 'not_sent',
+    cadenceStatus: undefined,
     isCompleted: false,
   };
 }
@@ -919,20 +918,11 @@ export function getScheduleDayStyle(dateStr?: string | null): ScheduleDayStyle {
 
 /**
  * Resolves tomorrow's warmup target date string (YYYY-MM-DD).
- * - Mon-Fri: tomorrow is next calendar day (+1).
- * - Saturday: Sunday is rest day, so tomorrow's dispatch target is Monday (+2).
- * - Sunday: tomorrow is Monday (+1).
+ * Starts at +1 calendar day and automatically shifts off Sundays (rest day) and frozen dates.
  */
 export function getTomorrowWarmupTargetDate(referenceDateStr = getLocalTodayStr()): string {
   const norm = normalizeToLocalDateStr(referenceDateStr) || getLocalTodayStr();
-  const [y, m, d] = norm.split('-').map(Number);
-  const currentDay = new Date(y, m - 1, d).getDay(); // 0 = Sun, 6 = Sat
-
-  if (currentDay === 6) {
-    // Saturday -> next dispatch is Monday (+2 days)
-    return addDays(norm, 2);
-  }
-  return addDays(norm, 1);
+  return shiftDueDateOffRestDay(addDays(norm, 1));
 }
 
 /**
@@ -968,7 +958,7 @@ export function setManualWarmupOverride(enabled: boolean): void {
 }
 
 /**
- * Checks if a lead was warmed up TODAY.
+ * Checks if a lead was warmed up TODAY (or in the future / without timestamp).
  * If warmed today (or if warmed with no timestamp), it CANNOT be sent today; it unlocks at midnight tomorrow.
  */
 export function isLeadWarmedToday(lead: ChannelLead, referenceDateStr = getLocalTodayStr()): boolean {
@@ -988,9 +978,10 @@ export function isLeadWarmedToday(lead: ChannelLead, referenceDateStr = getLocal
   if (!lead.warmedUpAt) {
     return true;
   }
+  const normRef = normalizeToLocalDateStr(referenceDateStr) || getLocalTodayStr();
   const warmedDate = normalizeToLocalDateStr(lead.warmedUpAt);
   // If normalization failed or matches today or in the future: strictly warmed today
-  if (!warmedDate || warmedDate >= referenceDateStr) {
+  if (!warmedDate || warmedDate >= normRef) {
     return true;
   }
   return false;
@@ -1002,6 +993,10 @@ export function isLeadWarmedToday(lead: ChannelLead, referenceDateStr = getLocal
  * Warming up a lead today is strictly for tomorrow's dispatch. Same-day send is prohibited.
  */
 export function isLeadWarmedBeforeToday(lead: ChannelLead, referenceDateStr = getLocalTodayStr()): boolean {
+  // Email-only leads do not require social warm-up
+  if (isEmailOnlyLead(lead)) {
+    return true;
+  }
   // If manual testing override is enabled, allow immediate dispatch
   if (isManualWarmupOverrideEnabled()) {
     return true;
@@ -1013,11 +1008,12 @@ export function isLeadWarmedBeforeToday(lead: ChannelLead, referenceDateStr = ge
   if (isLeadWarmedToday(lead, referenceDateStr)) {
     return false;
   }
+  const normRef = normalizeToLocalDateStr(referenceDateStr) || getLocalTodayStr();
   if (lead.warmedUpAt) {
     const warmedDate = normalizeToLocalDateStr(lead.warmedUpAt);
     if (warmedDate) {
       // Must be strictly earlier than reference date (yesterday or older)
-      return warmedDate < referenceDateStr;
+      return warmedDate < normRef;
     }
   }
   // Safe default: cannot dispatch today without verified past date
@@ -1040,42 +1036,33 @@ export function isLeadDispatchLocked(lead: ChannelLead, referenceDateStr = getLo
 
 /**
  * Smart Warm-Up Alert Logic:
- * - If already warmed up: false
- * - If Saturday: do NOT show warm-up alerts for Sunday (rest day)
- * - If Sunday: show warm-up alerts for Monday's leads (to prep for Monday launch)
- * - On normal weekdays: show warm-up alert for leads scheduled for today or overdue
+ * - Email-only, already warmed, replied, or completed leads: false
+ * - Otherwise: true if the lead's scheduled date matches the next active warm-up target
+ *   dispatch date (skipping Sundays & frozen days) OR is due today / overdue without warm-up.
  */
-export function shouldShowWarmupAlert(lead: ChannelLead): boolean {
+export function shouldShowWarmupAlert(lead: ChannelLead, referenceDateStr = getLocalTodayStr()): boolean {
   if (isEmailOnlyLead(lead)) {
     return false;
   }
-  if (lead.isWarmedUp || lead.warmupStatus === 'warmed' || lead.isCompleted || lead.leadStatus === 'replied' || lead.leadStatus === 'completed') {
+  if (
+    lead.isWarmedUp ||
+    lead.warmupStatus === 'warmed' ||
+    lead.isCompleted ||
+    lead.cadenceStatus === 'cancelled' ||
+    lead.leadStatus === 'replied' ||
+    lead.leadStatus === 'completed'
+  ) {
     return false;
   }
-
-  const now = new Date();
-  const currentDay = now.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
 
   if (!lead.scheduledDate) return false;
   const normDate = normalizeToLocalDateStr(lead.scheduledDate);
   if (!normDate) return false;
 
-  const [y, m, d] = normDate.split('-').map(Number);
-  const leadDay = new Date(y, m - 1, d).getDay();
+  const normRef = normalizeToLocalDateStr(referenceDateStr) || getLocalTodayStr();
+  const targetDispatchDate = getTomorrowWarmupTargetDate(normRef);
 
-  // Smart Rule 1: If today is Saturday, do NOT show warm-up alerts for Sunday
-  if (currentDay === 6) {
-    if (leadDay === 0) return false;
-    return isDateToday(lead.scheduledDate);
-  }
-
-  // Smart Rule 2: If today is Sunday, show warm-up alerts for Monday's leads
-  if (currentDay === 0) {
-    return leadDay === 1;
-  }
-
-  // Normal weekdays: show alert if lead is due today or overdue
-  return isDateToday(lead.scheduledDate) || isDateOverdue(lead.scheduledDate);
+  return normDate === targetDispatchDate || normDate <= normRef;
 }
 
 /**
@@ -1195,7 +1182,10 @@ export function getNextAvailableScheduleDate(
       l.cadenceStatus !== 'cancelled' &&
       !l.isArchived
     ) {
-      countsByDate[l.scheduledDate] = (countsByDate[l.scheduledDate] || 0) + 1;
+      const normSched = normalizeToLocalDateStr(l.scheduledDate);
+      if (normSched) {
+        countsByDate[normSched] = (countsByDate[normSched] || 0) + 1;
+      }
     }
   });
 

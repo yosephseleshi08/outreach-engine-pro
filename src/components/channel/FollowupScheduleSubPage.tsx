@@ -1192,7 +1192,7 @@ export function FollowupScheduleSubPage({
                       </div>
                       <span className="text-xs text-slate-500 font-mono">Target: {target}</span>
                     </div>
-                    <p className="text-xs text-slate-400 italic truncate">"{templates.day14Message}"</p>
+                    <p className="text-xs text-slate-400 italic truncate">"{templates.day8Message}"</p>
 
                     {adminOverrideEnabled && (
                       <div className="pt-2 border-t border-purple-500/20 flex items-center justify-between gap-2 flex-wrap">
@@ -1200,7 +1200,7 @@ export function FollowupScheduleSubPage({
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => handleCopy(`${lead.id}-day8-override`, templates.day14Message)}
+                            onClick={() => handleCopy(`${lead.id}-day8-override`, templates.day8Message)}
                             className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-slate-300 font-semibold cursor-pointer"
                           >
                             {copiedKey === `${lead.id}-day8-override` ? 'Copied!' : 'Copy Msg'}

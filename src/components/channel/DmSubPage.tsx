@@ -25,6 +25,8 @@ import { TestLinkButton } from '../TestLinkButton';
 import {
   getLocalTodayStr,
   normalizeToLocalDateStr,
+  addDays,
+  getScheduleDayStyle,
   getTomorrowWarmupTargetDate,
   isLeadWarmed,
   isEmailOnlyLead,
@@ -95,6 +97,10 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
 
   const todayStr = getLocalTodayStr();
   const warmupTargetDate = getTomorrowWarmupTargetDate(todayStr);
+  const isTargetDirectTomorrow = warmupTargetDate === addDays(todayStr, 1);
+  const warmupTargetDayName = getScheduleDayStyle(warmupTargetDate).dayName;
+  const warmupTargetPrepLabel = isTargetDirectTomorrow ? 'tomorrow' : warmupTargetDayName;
+  const warmupTargetTitleLabel = isTargetDirectTomorrow ? 'Tomorrow' : warmupTargetDayName;
 
   const [year, month, day] = todayStr.split('-').map(Number);
   const todayDate = new Date(year, month - 1, day);
@@ -295,11 +301,11 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
                   🔥 Warm-Up Today ({getChannelLabel(channel)})
                 </h1>
                 <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-mono font-bold">
-                  Target Dispatch: {warmupTargetDate} {isSaturday ? '(Monday)' : ''}
+                  Target Dispatch: {warmupTargetDate} ({warmupTargetDayName})
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Daily Cycle: Warm up tomorrow's leads today. Once warmed, their dispatch buttons unlock automatically tomorrow morning.
+                Daily Cycle: Warm up {warmupTargetPrepLabel}&apos;s leads today. Once warmed, their dispatch buttons unlock automatically for {warmupTargetDayName} outreach.
               </p>
             </div>
           </div>
@@ -308,7 +314,7 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
         {/* Status Counter Chips */}
         <div className="flex items-center gap-3 text-xs font-mono self-start md:self-auto flex-wrap">
           <div className="bg-slate-950/70 border border-white/10 px-3.5 py-2 rounded-xl flex items-center gap-2">
-            <span className="text-slate-400 font-sans">Tomorrow's Leads:</span>
+            <span className="text-slate-400 font-sans">{warmupTargetTitleLabel}&apos;s Leads:</span>
             <strong className="text-white font-bold">{tomorrowLeads.length}</strong>
           </div>
           <div className="bg-emerald-500/10 border border-emerald-500/30 px-3.5 py-2 rounded-xl flex items-center gap-2 text-emerald-300 font-bold">
@@ -364,13 +370,13 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
           <div className="space-y-1">
             <h3 className="text-base sm:text-lg font-bold text-slate-200 font-['Outfit']">
               {isSunday
-                ? 'Sunday Rest Mode: No warm-ups scheduled today'
+                ? `Sunday Prep: All ${warmupTargetDayName} prospects are warmed up, or none are scheduled`
                 : isSaturday
-                ? 'All Monday prospects are warmed up, or none are scheduled for Monday'
-                : 'No leads scheduled for tomorrow (or all already warmed up)'}
+                ? `Saturday Prep: All ${warmupTargetDayName} prospects are warmed up, or none are scheduled for ${warmupTargetDayName}`
+                : `No leads scheduled for ${warmupTargetPrepLabel} (or all already warmed up)`}
             </h3>
             <p className="text-xs text-slate-500 max-w-md mx-auto">
-              This tab strictly isolates tomorrow's scheduled outreach ({warmupTargetDate}). Prospects scheduled for future days will appear here the day before their scheduled dispatch.
+              This tab strictly isolates {warmupTargetPrepLabel}&apos;s scheduled outreach ({warmupTargetDate}). Prospects scheduled for future days will appear here the day before their scheduled dispatch.
             </p>
           </div>
         </div>
@@ -379,7 +385,7 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
           <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
             <span className="font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
               <Flame className="w-4 h-4 text-amber-400" />
-              <span>Tomorrow's Queue ({tomorrowLeads.length} Total Leads for {warmupTargetDate})</span>
+              <span>{warmupTargetTitleLabel}&apos;s Queue ({tomorrowLeads.length} Total Leads for {warmupTargetDate})</span>
             </span>
             <span className="text-slate-500">
               Strict Gate: Only leads scheduled for {warmupTargetDate} are accessible
