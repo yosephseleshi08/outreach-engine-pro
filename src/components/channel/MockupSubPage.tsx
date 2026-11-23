@@ -1,25 +1,28 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Upload,
-  FileCode,
+  Camera,
   Download,
   Trash2,
   ExternalLink,
-  Eye,
   X,
   AlertCircle,
   RefreshCw,
-  CheckCircle2,
-  Code,
+  ZoomIn,
+  Search,
+  Image as ImageIcon,
 } from 'lucide-react';
-import { ChannelLead, MultiChannelType } from '../../types';
-import {
-  saveMockupImage,
-  getMockupImage,
-  deleteMockupImage,
-  getMockupStorageKey,
-} from '../../utils/indexedDbVault';
+import { ChannelLead, EvidenceImage, MultiChannelType } from '../../types';
 import { getChannelLabel, getPlatformLink } from '../../utils/channelStorage';
+import {
+  MAX_EVIDENCE_IMAGES,
+  getLeadEvidenceImages,
+  getEvidenceDownloadFilename,
+  addEvidenceImagesToLead,
+  replaceEvidenceImageOnLead,
+  deleteEvidenceImageFromLead,
+  downloadEvidenceImage,
+} from '../../utils/evidenceStorage';
 import { TestLinkButton } from '../TestLinkButton';
 
 interface MockupSubPageProps {
@@ -30,347 +33,450 @@ interface MockupSubPageProps {
 
 export function MockupSubPage({ channel, leads, onUpdateLeads }: MockupSubPageProps) {
   const [loadingKeys, setLoadingKeys] = useState<Record<string, boolean>>({});
-  const [activePreviewModal, setActivePreviewModal] = useState<{
-    leadId: string;
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterMode, setFilterMode] = useState<'all' | 'with_evidence' | 'missing'>('all');
+  const [zoomModal, setZoomModal] = useState<{
     leadName: string;
-    htmlContent: string;
-    fileName: string;
+    image: EvidenceImage;
+    index: number;
   } | null>(null);
 
-  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const uploadInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const replaceInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  const handleHtmlFileUpload = async (leadId: string, file: File) => {
-    if (!file) return;
-
-    if (!file.name.toLowerCase().endsWith('.html') && file.type !== 'text/html') {
-      alert('Please upload an HTML file (.html).');
-      return;
-    }
-
-    setLoadingKeys((prev) => ({ ...prev, [leadId]: true }));
-
+  const persistUpdatedLead = (updatedLead: ChannelLead) => {
     try {
-      const htmlContent = await file.text();
-      const blobUrl = URL.createObjectURL(new Blob([htmlContent], { type: 'text/html' }));
-      const key = getMockupStorageKey(channel, leadId);
-
-      // Persist HTML content into IndexedDB
-      try {
-        await saveMockupImage(key, htmlContent);
-      } catch (idbErr) {
-        console.warn('IndexedDB write error for HTML mockup:', idbErr);
-      }
-
-      // Update lead in state
-      const nowIso = new Date().toISOString();
-      const updated = leads.map((l) => {
-        if (l.id === leadId) {
-          return {
-            ...l,
-            hasMockup: true,
-            mockupHtml: file.name,
-            mockupHtmlName: file.name,
-            mockupHtmlContent: htmlContent,
-            mockupUrl: blobUrl,
-            mockupFileName: file.name,
-            mockupUploadedAt: nowIso,
-          };
-        }
-        return l;
-      });
-
+      const updated = leads.map((l) => (l.id === updatedLead.id ? updatedLead : l));
       onUpdateLeads(updated);
-      setLoadingKeys((prev) => ({ ...prev, [leadId]: false }));
     } catch (err) {
-      console.error('Failed to process HTML mockup upload:', err);
-      setLoadingKeys((prev) => ({ ...prev, [leadId]: false }));
-      alert('Failed to read HTML file. Please check file permissions and try again.');
+      console.error('Failed to persist evidence to LocalStorage:', err);
+      setErrorBanner(
+        'Browser LocalStorage quota exceeded. Delete unused screenshots from older leads to free up space.'
+      );
     }
   };
 
-  const handleDeleteMockup = async (leadId: string) => {
-    if (!window.confirm('Delete this mockup HTML file?')) return;
+  const handleUploadEvidence = async (lead: ChannelLead, fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    setErrorBanner(null);
+    setLoadingKeys((prev) => ({ ...prev, [lead.id]: true }));
 
-    const key = getMockupStorageKey(channel, leadId);
     try {
-      await deleteMockupImage(key);
-    } catch (e) {
-      console.warn('IndexedDB delete error:', e);
-    }
-
-    const updated = leads.map((l) => {
-      if (l.id === leadId) {
-        return {
-          ...l,
-          hasMockup: false,
-          mockupHtml: undefined,
-          mockupHtmlName: undefined,
-          mockupHtmlContent: undefined,
-          mockupUrl: undefined,
-          mockupFileName: undefined,
-          mockupUploadedAt: undefined,
-        };
+      const { updatedLead, addedCount, errors } = await addEvidenceImagesToLead(
+        lead,
+        Array.from(fileList)
+      );
+      if (addedCount > 0) {
+        persistUpdatedLead(updatedLead);
       }
-      return l;
-    });
-
-    onUpdateLeads(updated);
-  };
-
-  const handleDownloadMockupHtml = (lead: ChannelLead) => {
-    const htmlContent = lead.mockupHtmlContent;
-    const fileName = lead.mockupHtmlName || lead.mockupFileName || `${lead.name.replace(/\s+/g, '_')}_mockup.html`;
-
-    if (!htmlContent) {
-      alert('No HTML content available to download.');
-      return;
+      if (errors.length > 0) {
+        setErrorBanner(errors.join(' '));
+      }
+    } finally {
+      setLoadingKeys((prev) => ({ ...prev, [lead.id]: false }));
+      const input = uploadInputRefs.current[lead.id];
+      if (input) input.value = '';
     }
-
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName.endsWith('.html') ? fileName : `${fileName}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
-  const mockupsCount = leads.filter((l) => Boolean(l.hasMockup || l.mockupHtml)).length;
+  const handleReplaceEvidence = async (
+    lead: ChannelLead,
+    imageId: string,
+    file: File | undefined
+  ) => {
+    if (!file) return;
+    setErrorBanner(null);
+    setLoadingKeys((prev) => ({ ...prev, [lead.id]: true }));
+
+    try {
+      const { updatedLead, error } = await replaceEvidenceImageOnLead(lead, imageId, file);
+      if (error) {
+        setErrorBanner(error);
+      } else {
+        persistUpdatedLead(updatedLead);
+      }
+    } finally {
+      setLoadingKeys((prev) => ({ ...prev, [lead.id]: false }));
+      const input = replaceInputRefs.current[`${lead.id}:${imageId}`];
+      if (input) input.value = '';
+    }
+  };
+
+  const handleDeleteEvidence = (lead: ChannelLead, imageId: string) => {
+    setErrorBanner(null);
+    const updatedLead = deleteEvidenceImageFromLead(lead, imageId);
+    persistUpdatedLead(updatedLead);
+    if (zoomModal?.image.id === imageId) {
+      setZoomModal(null);
+    }
+  };
+
+  const leadsWithEvidenceCount = leads.filter((l) => getLeadEvidenceImages(l).length > 0).length;
+  const totalScreenshotsCount = leads.reduce(
+    (sum, l) => sum + getLeadEvidenceImages(l).length,
+    0
+  );
+
+  const filteredLeads = leads.filter((lead) => {
+    const count = getLeadEvidenceImages(lead).length;
+    if (filterMode === 'with_evidence' && count === 0) return false;
+    if (filterMode === 'missing' && count > 0) return false;
+
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      lead.name.toLowerCase().includes(q) ||
+      lead.id.toLowerCase().includes(q) ||
+      (lead.link || '').toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-bold text-white font-['Outfit']">
-            {getChannelLabel(channel)} Mockup HTML Vault
+          <h2 className="text-base font-bold text-white font-['Outfit'] flex items-center gap-2">
+            <span>📸 {getChannelLabel(channel)} Evidence Locker</span>
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Store, preview, and manage custom HTML mockups bound to each lead ID for instant proof-of-work delivery.
+            Upload and store up to 3 mockup screenshots (PNG, JPG) per lead in LocalStorage for instant Day 8 &amp; Day 14 download.
           </p>
         </div>
-        <div className="text-xs font-mono text-slate-400">
-          Mockups ready:{' '}
-          <span className="text-indigo-400 font-bold">{mockupsCount}</span> /{' '}
-          {leads.length}
+        <div className="flex items-center gap-3 text-xs font-mono text-slate-400 bg-slate-950/60 px-3.5 py-2 rounded-xl border border-white/10 self-start sm:self-auto">
+          <span>
+            Leads ready:{' '}
+            <strong className="text-indigo-400 tabular-nums">{leadsWithEvidenceCount}</strong> /{' '}
+            <span className="tabular-nums">{leads.length}</span>
+          </span>
+          <span className="text-slate-600">·</span>
+          <span>
+            Screenshots:{' '}
+            <strong className="text-purple-300 tabular-nums">{totalScreenshotsCount}</strong>
+          </span>
         </div>
       </div>
 
-      {leads.length === 0 ? (
-        <div className="rounded-2xl border border-white/[0.08] bg-slate-900/50 p-12 text-center text-slate-400">
-          <FileCode className="w-8 h-8 text-slate-600 mx-auto mb-3" />
-          <p className="text-sm font-semibold text-slate-300">No leads available for mockups</p>
-          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-            Add prospect leads in the "Leads" sub-tab first to upload mockup HTML files here.
-          </p>
+      {/* Error Banner */}
+      {errorBanner && (
+        <div className="p-3.5 rounded-2xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{errorBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorBanner(null)}
+            className="text-amber-300 hover:text-white cursor-pointer p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
-      ) : (
-        <div className="rounded-2xl border border-white/[0.08] bg-slate-900/50 backdrop-blur-sm overflow-hidden shadow-xl">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr className="border-b border-white/[0.08] bg-slate-950/60 text-slate-400 text-xs font-semibold uppercase tracking-wider">
-                  <th className="py-3 px-4 text-left w-32">Lead ID</th>
-                  <th className="py-3 px-4 text-left w-64">Prospect Name &amp; Profile</th>
-                  <th className="py-3 px-4 text-left">Saved Mockup HTML</th>
-                  <th className="py-3 px-4 text-right w-64">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/[0.04]">
-                {leads.map((lead) => {
-                  const isLoading = loadingKeys[lead.id];
-                  const hasHtml = Boolean(lead.mockupHtml || lead.mockupHtmlContent || lead.hasMockup);
-                  const fileName = lead.mockupHtmlName || lead.mockupFileName || 'mockup.html';
+      )}
 
-                  return (
-                    <tr key={lead.id} className="hover:bg-white/[0.02] transition-colors">
-                      {/* ID */}
-                      <td className="py-3.5 px-4 text-left font-mono text-xs tabular-nums">
-                        <span className="font-semibold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-md border border-indigo-500/20">
-                          {lead.id}
-                        </span>
-                      </td>
+      {/* Search & Filter Controls */}
+      {leads.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search lead ID or business name..."
+              className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900/90 border border-white/10 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
 
-                      {/* Name & Link */}
-                      <td className="py-3.5 px-4 text-left">
-                        <div className="font-medium text-sm text-slate-100 font-['Outfit'] truncate max-w-xs">
-                          {lead.name}
-                        </div>
-                        <div className="flex items-center gap-2 flex-wrap mt-0.5">
-                          <a
-                            href={getPlatformLink(lead.platformLink || lead.link, lead.channel || channel)}
-                            target={getPlatformLink(lead.platformLink || lead.link, lead.channel || channel).startsWith('mailto:') ? '_self' : '_blank'}
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-indigo-400 transition-colors truncate max-w-xs"
-                            title={`Open ${lead.platformLink || lead.link}`}
-                          >
-                            <span className="truncate">{lead.platformLink || lead.link}</span>
-                            <ExternalLink className="w-3 h-3 shrink-0" />
-                          </a>
-                          <TestLinkButton lead={lead} platform={lead.channel || channel} />
-                        </div>
-                      </td>
-
-                      {/* Mockup Status Display */}
-                      <td className="py-3.5 px-4 text-left">
-                        {isLoading ? (
-                          <div className="flex items-center gap-2 text-xs text-indigo-400">
-                            <RefreshCw className="w-4 h-4 animate-spin" />
-                            <span>Reading &amp; storing HTML...</span>
-                          </div>
-                        ) : hasHtml ? (
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-9 h-9 rounded-xl bg-orange-500/15 text-orange-400 border border-orange-500/30 flex items-center justify-center shrink-0">
-                              <Code className="w-4 h-4" />
-                            </div>
-                            <div className="text-xs space-y-0.5">
-                              <span className="font-mono font-bold text-orange-300 truncate block max-w-xs">
-                                {fileName}
-                              </span>
-                              <span className="text-[10px] text-slate-400 block font-mono">
-                                HTML Mockup Ready
-                                {lead.mockupUploadedAt && ` · ${new Date(lead.mockupUploadedAt).toLocaleDateString()}`}
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-xs text-slate-500">
-                            <FileCode className="w-4 h-4 opacity-40" />
-                            <span>No mockup HTML uploaded</span>
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Actions: Upload Mockup HTML / Preview / Download / Delete */}
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                          {/* Hidden File Input strictly for .html */}
-                          <input
-                            type="file"
-                            accept=".html,text/html"
-                            ref={(el) => {
-                              fileInputRefs.current[lead.id] = el;
-                            }}
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) handleHtmlFileUpload(lead.id, file);
-                            }}
-                          />
-
-                          {hasHtml ? (
-                            <>
-                              {/* Preview HTML Button */}
-                              {lead.mockupHtmlContent && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setActivePreviewModal({
-                                      leadId: lead.id,
-                                      leadName: lead.name,
-                                      htmlContent: lead.mockupHtmlContent!,
-                                      fileName,
-                                    })
-                                  }
-                                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 hover:text-white border border-indigo-500/30 transition cursor-pointer flex items-center gap-1"
-                                  title="Live interactive preview of mockup HTML"
-                                >
-                                  <Eye className="w-3.5 h-3.5" />
-                                  <span>Preview</span>
-                                </button>
-                              )}
-
-                              {/* Download HTML Button */}
-                              {lead.mockupHtmlContent && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDownloadMockupHtml(lead)}
-                                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 transition cursor-pointer flex items-center gap-1"
-                                  title="Download HTML file"
-                                >
-                                  <Download className="w-3.5 h-3.5 text-indigo-400" />
-                                  <span className="hidden sm:inline">Download</span>
-                                </button>
-                              )}
-
-                              {/* Replace Button */}
-                              <button
-                                type="button"
-                                onClick={() => fileInputRefs.current[lead.id]?.click()}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer border border-white/5"
-                                title="Upload new HTML file to replace"
-                              >
-                                <Upload className="w-3.5 h-3.5" />
-                              </button>
-
-                              {/* Delete Button */}
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteMockup(lead.id)}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-                                title="Delete mockup HTML"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </>
-                          ) : (
-                            /* Upload Mockup HTML Button */
-                            <button
-                              type="button"
-                              onClick={() => fileInputRefs.current[lead.id]?.click()}
-                              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white transition flex items-center gap-1.5 shadow-md shadow-indigo-600/30 cursor-pointer active:scale-95"
-                              title="Upload HTML file for this lead"
-                            >
-                              <Upload className="w-3.5 h-3.5" />
-                              <span>Upload Mockup HTML</span>
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="flex items-center gap-1.5 bg-slate-900/80 p-1 rounded-xl border border-white/10 self-start sm:self-auto">
+            {(
+              [
+                { id: 'all', label: `All (${leads.length})` },
+                { id: 'with_evidence', label: `With Evidence (${leadsWithEvidenceCount})` },
+                { id: 'missing', label: `Missing (${leads.length - leadsWithEvidenceCount})` },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setFilterMode(opt.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  filterMode === opt.id
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
         </div>
       )}
 
-      {/* Live HTML Preview Modal */}
-      {activePreviewModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-md animate-fade-in">
-          <div className="w-full max-w-5xl h-[90vh] rounded-3xl bg-slate-900 border border-white/15 shadow-2xl flex flex-col overflow-hidden">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10 bg-slate-950/80">
-              <div className="flex items-center gap-2.5">
-                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  {activePreviewModal.leadId}
+      {leads.length === 0 ? (
+        <div className="rounded-2xl border border-white/[0.08] bg-slate-900/50 p-12 text-center text-slate-400">
+          <Camera className="w-8 h-8 text-slate-600 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-slate-300">No leads available for evidence</p>
+          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+            Add prospect leads in the "Leads" sub-tab first to store mockup screenshots here.
+          </p>
+        </div>
+      ) : filteredLeads.length === 0 ? (
+        <div className="rounded-2xl border border-white/[0.08] bg-slate-900/50 p-10 text-center text-slate-400">
+          <ImageIcon className="w-7 h-7 text-slate-600 mx-auto mb-2" />
+          <p className="text-sm font-semibold text-slate-300">No matching leads</p>
+          <p className="text-xs text-slate-500 mt-1">
+            Adjust your search or filter to see other leads in this workspace.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredLeads.map((lead) => {
+            const isLoading = Boolean(loadingKeys[lead.id]);
+            const images = getLeadEvidenceImages(lead);
+            const remainingSlots = MAX_EVIDENCE_IMAGES - images.length;
+
+            return (
+              <div
+                key={lead.id}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files?.length && remainingSlots > 0) {
+                    handleUploadEvidence(lead, e.dataTransfer.files);
+                  }
+                }}
+                className="rounded-2xl border border-white/[0.08] bg-slate-900/60 backdrop-blur-sm p-4 sm:p-5 shadow-xl space-y-4 hover:border-indigo-500/30 transition"
+              >
+                {/* Hidden Multi-File Upload Input */}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,.png,.jpg,.jpeg"
+                  multiple
+                  ref={(el) => {
+                    uploadInputRefs.current[lead.id] = el;
+                  }}
+                  className="hidden"
+                  onChange={(e) => handleUploadEvidence(lead, e.target.files)}
+                />
+
+                {/* Lead Header Row */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/[0.06] pb-3.5">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="font-mono text-xs font-semibold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-md border border-indigo-500/20">
+                        {lead.id}
+                      </span>
+                      <h3 className="font-bold text-sm sm:text-base text-slate-100 font-['Outfit'] truncate">
+                        {lead.name}
+                      </h3>
+                      <span
+                        className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                          images.length > 0
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                            : 'bg-white/5 text-slate-400 border-white/10'
+                        }`}
+                      >
+                        {images.length} / {MAX_EVIDENCE_IMAGES} Uploaded
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <a
+                        href={getPlatformLink(lead.platformLink || lead.link, lead.channel || channel)}
+                        target={
+                          getPlatformLink(lead.platformLink || lead.link, lead.channel || channel).startsWith(
+                            'mailto:'
+                          )
+                            ? '_self'
+                            : '_blank'
+                        }
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-indigo-400 transition-colors truncate max-w-xs"
+                        title={`Open ${lead.platformLink || lead.link}`}
+                      >
+                        <span className="truncate">{lead.platformLink || lead.link}</span>
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                      <TestLinkButton lead={lead} platform={lead.channel || channel} />
+                    </div>
+                  </div>
+
+                  {/* Upload Evidence CTA */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {isLoading ? (
+                      <div className="px-3.5 py-2 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold flex items-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving screenshot...</span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={remainingSlots <= 0}
+                        onClick={() => uploadInputRefs.current[lead.id]?.click()}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                          remainingSlots > 0
+                            ? 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-md shadow-indigo-600/30 cursor-pointer active:scale-95'
+                            : 'bg-slate-800 text-slate-500 border border-white/5 cursor-not-allowed'
+                        }`}
+                        title={
+                          remainingSlots > 0
+                            ? `Upload PNG or JPG screenshots (${remainingSlots} slot${remainingSlots === 1 ? '' : 's'} remaining)`
+                            : 'Maximum 3 screenshots stored. Delete or replace an image to change.'
+                        }
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>
+                          {remainingSlots > 0 ? 'Upload Evidence' : 'Locker Full (3/3)'}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Thumbnails Grid (Up to 3) */}
+                {images.length === 0 ? (
+                  <div
+                    onClick={() => uploadInputRefs.current[lead.id]?.click()}
+                    className="rounded-xl border border-dashed border-white/10 hover:border-indigo-500/40 bg-slate-950/40 hover:bg-indigo-950/10 p-5 text-center cursor-pointer transition flex flex-col sm:flex-row items-center justify-center gap-2 text-xs text-slate-400"
+                  >
+                    <Camera className="w-4 h-4 text-slate-500" />
+                    <span>
+                      No mockup screenshots stored yet. Click <strong className="text-indigo-300">Upload Evidence</strong> or drop PNG/JPG files here (up to 3).
+                    </span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                    {images.map((image, idx) => {
+                      const downloadFilename = getEvidenceDownloadFilename(lead.name, idx);
+                      const replaceKey = `${lead.id}:${image.id}`;
+
+                      return (
+                        <div
+                          key={image.id}
+                          className="rounded-xl border border-white/10 bg-slate-950/75 overflow-hidden flex flex-col justify-between shadow-md"
+                        >
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,.png,.jpg,.jpeg"
+                            ref={(el) => {
+                              replaceInputRefs.current[replaceKey] = el;
+                            }}
+                            className="hidden"
+                            onChange={(e) =>
+                              handleReplaceEvidence(lead, image.id, e.target.files?.[0])
+                            }
+                          />
+
+                          {/* Thumbnail Preview */}
+                          <div
+                            onClick={() => setZoomModal({ leadName: lead.name, image, index: idx })}
+                            className="relative aspect-[16/10] bg-black/50 overflow-hidden group cursor-pointer border-b border-white/5"
+                            title="Click to inspect full screenshot"
+                          >
+                            <img
+                              src={image.dataUrl}
+                              alt={`${lead.name} mockup ${idx + 1}`}
+                              className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
+                            />
+                            <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/75 border border-white/15 text-[10px] font-mono font-bold text-white">
+                              #{idx + 1}
+                            </span>
+                            <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                              <span className="px-2.5 py-1 rounded-lg bg-slate-900/90 border border-white/20 text-xs font-bold text-white flex items-center gap-1">
+                                <ZoomIn className="w-3.5 h-3.5" />
+                                <span>Preview</span>
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Thumbnail Info + Download / Replace / Delete */}
+                          <div className="p-2.5 space-y-2">
+                            <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
+                              <span className="truncate text-slate-300" title={downloadFilename}>
+                                {downloadFilename}
+                              </span>
+                              <span className="text-[10px] text-slate-500 shrink-0">
+                                {new Date(image.uploadedAt).toLocaleDateString()}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => downloadEvidenceImage(image, lead.name, idx)}
+                                className="flex-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shadow-sm"
+                                title={`Download ${downloadFilename}`}
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Download</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => replaceInputRefs.current[replaceKey]?.click()}
+                                className="px-2 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition cursor-pointer flex items-center gap-1"
+                                title="Replace this image"
+                              >
+                                <Upload className="w-3.5 h-3.5" />
+                                <span className="hidden lg:inline">Replace</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteEvidence(lead, image.id)}
+                                className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/15 text-slate-400 hover:text-rose-400 border border-white/10 hover:border-rose-500/30 transition cursor-pointer"
+                                title="Delete screenshot"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Fullscreen Lightbox Preview Modal */}
+      {zoomModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-fade-in"
+          onClick={() => setZoomModal(null)}
+        >
+          <div
+            className="w-full max-w-4xl max-h-[90vh] rounded-3xl bg-slate-900 border border-white/15 shadow-2xl flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10 bg-slate-950/90">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="font-bold text-sm text-white font-['Outfit'] truncate">
+                  📸 {zoomModal.leadName} — Mockup #{zoomModal.index + 1}
                 </span>
-                <span className="font-bold text-sm text-white font-['Outfit']">
-                  HTML Mockup Preview: {activePreviewModal.leadName}
-                </span>
-                <span className="text-xs text-slate-400 font-mono hidden sm:inline">
-                  ({activePreviewModal.fileName})
+                <span className="text-xs font-mono text-slate-400 hidden sm:inline">
+                  ({getEvidenceDownloadFilename(zoomModal.leadName, zoomModal.index)})
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={() => {
-                    const blob = new Blob([activePreviewModal.htmlContent], { type: 'text/html' });
-                    const url = URL.createObjectURL(blob);
-                    window.open(url, '_blank');
-                  }}
-                  className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 hover:text-white transition flex items-center gap-1 cursor-pointer"
-                  title="Open mockup in a new tab"
+                  onClick={() =>
+                    downloadEvidenceImage(zoomModal.image, zoomModal.leadName, zoomModal.index)
+                  }
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
                 >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Open New Tab</span>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActivePreviewModal(null)}
+                  onClick={() => setZoomModal(null)}
                   className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
                 >
                   <X className="w-5 h-5" />
@@ -378,13 +484,11 @@ export function MockupSubPage({ channel, leads, onUpdateLeads }: MockupSubPagePr
               </div>
             </div>
 
-            {/* Live iframe Viewport */}
-            <div className="flex-1 bg-white relative">
-              <iframe
-                title={`Mockup Preview for ${activePreviewModal.leadName}`}
-                srcDoc={activePreviewModal.htmlContent}
-                sandbox="allow-scripts allow-same-origin"
-                className="w-full h-full border-none"
+            <div className="p-4 bg-black/60 flex items-center justify-center overflow-auto max-h-[80vh]">
+              <img
+                src={zoomModal.image.dataUrl}
+                alt={`${zoomModal.leadName} Mockup ${zoomModal.index + 1}`}
+                className="max-w-full max-h-[75vh] object-contain rounded-lg"
               />
             </div>
           </div>

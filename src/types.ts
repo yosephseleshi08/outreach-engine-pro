@@ -90,6 +90,13 @@ export interface LeadScreenshot {
   fileSize?: string;
 }
 
+export interface EvidenceImage {
+  id: string;
+  dataUrl: string;
+  fileName: string;
+  uploadedAt: string;
+}
+
 export interface Lead {
   id: number;
   restaurantName: string;
@@ -434,7 +441,8 @@ export interface ChannelLead {
   repliedAt?: string;
   dismissedDate?: string; // YYYY-MM-DD: date when lead was removed/dismissed from daily queue
 
-  // Sub-page E: Mockup & Breakdown Link (HTML and Screenshots)
+  // Sub-page E: Evidence Locker (Up to 3 mockup screenshots stored as Base64 in LocalStorage)
+  evidenceImages?: EvidenceImage[];
   hasMockup?: boolean;
   mockupFileName?: string;
   mockupUploadedAt?: string;

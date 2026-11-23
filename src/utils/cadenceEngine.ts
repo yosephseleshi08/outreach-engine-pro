@@ -789,7 +789,7 @@ export function getWeeklyOutreachStats(
     }
 
     // 4. Mockups & Analysis ready
-    if (lead.hasMockup || lead.mockupFileName || lead.leadAnalysis) {
+    if ((lead.evidenceImages && lead.evidenceImages.length > 0) || lead.hasMockup || lead.mockupFileName || lead.leadAnalysis) {
       mockupsAuditsCount++;
     }
   }

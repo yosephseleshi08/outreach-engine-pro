@@ -153,7 +153,7 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
   const totalPitches = allLeads.filter((l) => Boolean(l.initialDM || l.customPitch)).length;
   const totalScheduled = allLeads.filter((l) => Boolean(l.scheduledDate)).length;
   const totalDispatched = allLeads.filter((l) => Boolean(l.initialSentDate || l.dmSent)).length;
-  const totalMockups = allLeads.filter((l) => Boolean(l.hasMockup || l.mockupHtml)).length;
+  const totalMockups = allLeads.filter((l) => Boolean((l.evidenceImages && l.evidenceImages.length > 0) || l.hasMockup || l.mockupHtml)).length;
 
   return (
     <div className="space-y-6">
@@ -436,7 +436,7 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
                 const pitchesCount = item.leads.filter((l) => Boolean(l.initialDM || l.customPitch)).length;
                 const scheduledCount = item.leads.filter((l) => Boolean(l.scheduledDate)).length;
                 const dispatchedCount = item.leads.filter((l) => Boolean(l.initialSentDate || l.dmSent)).length;
-                const mockupsCount = item.leads.filter((l) => Boolean(l.hasMockup || l.mockupHtml)).length;
+                const mockupsCount = item.leads.filter((l) => Boolean((l.evidenceImages && l.evidenceImages.length > 0) || l.hasMockup || l.mockupHtml)).length;
 
                 return (
                   <tr key={item.channel} className="hover:bg-white/[0.02] transition-colors">

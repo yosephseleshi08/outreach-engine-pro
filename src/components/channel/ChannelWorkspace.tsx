@@ -7,7 +7,6 @@ import {
   MessageSquare,
   Calendar,
   Clock,
-  Image as ImageIcon,
   Layers,
   Flame,
 } from 'lucide-react';
@@ -18,6 +17,7 @@ import { ScheduleSubPage } from './ScheduleSubPage';
 import { FollowupScheduleSubPage } from './FollowupScheduleSubPage';
 import { MockupSubPage } from './MockupSubPage';
 import { getChannelLabel } from '../../utils/channelStorage';
+import { getLeadEvidenceCount } from '../../utils/evidenceStorage';
 import { getLocalTodayStr, normalizeToLocalDateStr, getTomorrowWarmupTargetDate, isEmailOnlyLead, resolveLeadCadenceStep } from '../../utils/cadenceEngine';
 
 interface ChannelWorkspaceProps {
@@ -133,9 +133,9 @@ export function ChannelWorkspace({
     },
     {
       id: 'mockup',
-      label: 'Mockup',
-      icon: <ImageIcon className="w-4 h-4" />,
-      badge: leads.filter((l) => !!l.hasMockup || !!l.mockupHtml).length,
+      label: '📸 Evidence',
+      icon: null,
+      badge: leads.filter((l) => getLeadEvidenceCount(l) > 0).length,
     },
   ];
 

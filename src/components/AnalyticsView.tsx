@@ -47,7 +47,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const totalLeads = allLeads.length;
   const completedLeads = allLeads.filter((l) => l.isCompleted).length;
   const pitchesReady = allLeads.filter((l) => !!l.customPitch).length;
-  const mockupsReady = allLeads.filter((l) => !!l.hasMockup).length;
+  const mockupsReady = allLeads.filter((l) => Boolean((l.evidenceImages && l.evidenceImages.length > 0) || l.hasMockup)).length;
   const scheduledCount = allLeads.filter((l) => !!l.scheduledDate).length;
 
   // Projections
@@ -312,7 +312,7 @@ Projected MRR: $${potentialMrr}/mo`;
                 const pitches = item.leads.filter((l) => !!l.customPitch).length;
                 const scheduled = item.leads.filter((l) => !!l.scheduledDate).length;
                 const sent = item.leads.filter((l) => !!l.isCompleted).length;
-                const mockups = item.leads.filter((l) => !!l.hasMockup).length;
+                const mockups = item.leads.filter((l) => Boolean((l.evidenceImages && l.evidenceImages.length > 0) || l.hasMockup)).length;
 
                 return (
                   <tr key={item.name} className="hover:bg-white/5 transition">

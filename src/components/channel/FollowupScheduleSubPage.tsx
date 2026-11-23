@@ -26,6 +26,8 @@ import {
 } from 'lucide-react';
 import { ChannelLead, MultiChannelType } from '../../types';
 import { QuickNoteModal } from '../QuickNoteModal';
+import { EvidenceViewerModal } from '../EvidenceViewerModal';
+import { getLeadEvidenceCount } from '../../utils/evidenceStorage';
 import {
   getLocalTodayStr,
   isDateToday,
@@ -77,6 +79,7 @@ export function FollowupScheduleSubPage({
   const [activeCadenceTab, setActiveCadenceTab] = useState<FollowupCadenceTab>('due_today');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [noteModalLead, setNoteModalLead] = useState<ChannelLead | null>(null);
+  const [evidenceModalLead, setEvidenceModalLead] = useState<ChannelLead | null>(null);
   const [adminOverrideEnabled, setAdminOverrideEnabled] = useState(false);
   const [backstageLeads, setBackstageLeads] = useState<ChannelLead[]>(() => loadBackstageLeads());
 
@@ -694,6 +697,25 @@ export function FollowupScheduleSubPage({
 
                     <div className="flex items-center gap-2 flex-wrap">
                       {renderNoteButton(lead)}
+                      {(stageNumber === 8 || stageNumber === 14 || getLeadEvidenceCount(lead) > 0) && (
+                        <button
+                          type="button"
+                          onClick={() => setEvidenceModalLead(lead)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+                            getLeadEvidenceCount(lead) > 0
+                              ? 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border-purple-500/40 shadow-sm'
+                              : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                          }`}
+                          title="View and download stored mockup screenshots"
+                        >
+                          <span>📸 View Evidence</span>
+                          {getLeadEvidenceCount(lead) > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full bg-purple-500/30 text-[10px] font-mono text-purple-100">
+                              {getLeadEvidenceCount(lead)}
+                            </span>
+                          )}
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -1076,6 +1098,23 @@ export function FollowupScheduleSubPage({
 
                       <div className="flex items-center gap-2 flex-wrap">
                         {renderNoteButton(lead)}
+                        <button
+                          type="button"
+                          onClick={() => setEvidenceModalLead(lead)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+                            getLeadEvidenceCount(lead) > 0
+                              ? 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border-purple-500/40 shadow-sm'
+                              : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                          }`}
+                          title="View and download stored mockup screenshots"
+                        >
+                          <span>📸 View Evidence</span>
+                          {getLeadEvidenceCount(lead) > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full bg-purple-500/30 text-[10px] font-mono text-purple-100">
+                              {getLeadEvidenceCount(lead)}
+                            </span>
+                          )}
+                        </button>
 
                         <button
                           type="button"
@@ -1276,6 +1315,23 @@ export function FollowupScheduleSubPage({
 
                       <div className="flex items-center gap-2 flex-wrap">
                         {renderNoteButton(lead)}
+                        <button
+                          type="button"
+                          onClick={() => setEvidenceModalLead(lead)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+                            getLeadEvidenceCount(lead) > 0
+                              ? 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border-purple-500/40 shadow-sm'
+                              : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                          }`}
+                          title="View and download stored mockup screenshots"
+                        >
+                          <span>📸 View Evidence</span>
+                          {getLeadEvidenceCount(lead) > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full bg-purple-500/30 text-[10px] font-mono text-purple-100">
+                              {getLeadEvidenceCount(lead)}
+                            </span>
+                          )}
+                        </button>
 
                         <button
                           type="button"
@@ -1439,6 +1495,17 @@ export function FollowupScheduleSubPage({
         onDelete={() => {
           if (noteModalLead) handleDeleteQuickNote(noteModalLead.id);
           setNoteModalLead(null);
+        }}
+      />
+
+      {/* Evidence Locker Viewer Modal */}
+      <EvidenceViewerModal
+        lead={evidenceModalLead}
+        isOpen={Boolean(evidenceModalLead)}
+        onClose={() => setEvidenceModalLead(null)}
+        onUpdateLead={(updated) => {
+          setEvidenceModalLead(updated);
+          handleUpdateLeadItem(updated);
         }}
       />
     </div>

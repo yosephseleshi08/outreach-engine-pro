@@ -32,6 +32,8 @@ import { ChannelLead, MultiChannelType } from '../types';
 import { QuickNoteModal } from './QuickNoteModal';
 import { SundayPrepView } from './SundayPrepView';
 import { TestLinkButton } from './TestLinkButton';
+import { EvidenceViewerModal } from './EvidenceViewerModal';
+import { getLeadEvidenceCount } from '../utils/evidenceStorage';
 import {
   recordTodayCompletion,
   calculateDailyExecutionScore,
@@ -118,6 +120,7 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
 }) => {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [noteModalLead, setNoteModalLead] = useState<ChannelLead | null>(null);
+  const [evidenceModalLead, setEvidenceModalLead] = useState<ChannelLead | null>(null);
   const [showFrozenOverride, setShowFrozenOverride] = useState(false);
 
   // Dedicated Modal State for Requirement 2
@@ -2052,6 +2055,26 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                             <StickyNote className="w-3.5 h-3.5 text-amber-400" />
                             <span>{lead.quickNote ? 'Edit Note' : 'Add Note'}</span>
                           </button>
+
+                          {(stageNumber === 8 || stageNumber === 14 || getLeadEvidenceCount(lead) > 0) && (
+                            <button
+                              type="button"
+                              onClick={() => setEvidenceModalLead(lead)}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+                                getLeadEvidenceCount(lead) > 0
+                                  ? 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border-purple-500/40 shadow-sm'
+                                  : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                              }`}
+                              title="View and download stored mockup screenshots"
+                            >
+                              <span>📸 View Evidence</span>
+                              {getLeadEvidenceCount(lead) > 0 && (
+                                <span className="px-1.5 py-0.2 rounded-full bg-purple-500/30 text-[10px] font-mono text-purple-100">
+                                  {getLeadEvidenceCount(lead)}
+                                </span>
+                              )}
+                            </button>
+                          )}
                         </div>
 
                         {/* Dispatch Buttons: ✅ Scheduled (No 12-Min Lock) + Mark as Sent (12-Min Lock) */}
@@ -2366,6 +2389,26 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
                             <StickyNote className="w-3.5 h-3.5 text-amber-400" />
                             <span>{lead.quickNote ? 'Edit Note' : 'Add Note'}</span>
                           </button>
+
+                          {(stageNumber === 8 || stageNumber === 14 || getLeadEvidenceCount(lead) > 0) && (
+                            <button
+                              type="button"
+                              onClick={() => setEvidenceModalLead(lead)}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+                                getLeadEvidenceCount(lead) > 0
+                                  ? 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border-purple-500/40 shadow-sm'
+                                  : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                              }`}
+                              title="View and download stored mockup screenshots"
+                            >
+                              <span>📸 View Evidence</span>
+                              {getLeadEvidenceCount(lead) > 0 && (
+                                <span className="px-1.5 py-0.2 rounded-full bg-purple-500/30 text-[10px] font-mono text-purple-100">
+                                  {getLeadEvidenceCount(lead)}
+                                </span>
+                              )}
+                            </button>
+                          )}
                         </div>
 
                         {/* Dispatch Buttons: ✅ Scheduled (No 12-Min Lock) + Mark as Sent (12-Min Lock) */}
@@ -2683,6 +2726,17 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
         onClose={() => setNoteModalLead(null)}
         onSave={handleSaveQuickNote}
         onDelete={handleDeleteQuickNote}
+      />
+
+      {/* Evidence Locker Viewer Modal (Dispatch Verification & Instant Download) */}
+      <EvidenceViewerModal
+        lead={evidenceModalLead}
+        isOpen={Boolean(evidenceModalLead)}
+        onClose={() => setEvidenceModalLead(null)}
+        onUpdateLead={(updated) => {
+          setEvidenceModalLead(updated);
+          handleUpdateLead(updated);
+        }}
       />
     </div>
   );
