@@ -147,13 +147,13 @@ export default function App() {
       const resolved = resolveLeadCadenceStep(l, todayStr);
 
       // 1. Initial outreach due today: Email-only leads dispatch directly on/after scheduled date;
-      // social leads require today or overdue schedule + previous-day warm-up
+      // social leads require today schedule + previous-day warm-up
       if (resolved.stageNumber === 0) {
         if (!l.scheduledDate) return false;
         if (isEmailOnlyLead(l)) {
           return isDateToday(l.scheduledDate) || isDateOverdue(l.scheduledDate);
         }
-        if (isDateToday(l.scheduledDate) || isDateOverdue(l.scheduledDate)) {
+        if (isDateToday(l.scheduledDate)) {
           return isLeadWarmedBeforeToday(l, todayStr);
         }
         return false;

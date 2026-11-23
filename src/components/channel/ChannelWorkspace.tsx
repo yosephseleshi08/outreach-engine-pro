@@ -113,8 +113,7 @@ export function ChannelWorkspace({
     if (l.isCompleted || l.cadenceStatus === 'cancelled' || l.leadStatus === 'replied' || l.leadStatus === 'completed') return false;
     const resolved = resolveLeadCadenceStep(l, todayStr);
     if (resolved.stageNumber === 0) {
-      const normSched = normalizeToLocalDateStr(l.scheduledDate);
-      return Boolean(normSched && normSched <= todayStr);
+      return Boolean(l.scheduledDate && l.scheduledDate <= todayStr);
     }
     return resolved.isFollowupDue;
   }).length;
@@ -130,7 +129,7 @@ export function ChannelWorkspace({
       id: 'schedule',
       label: 'Schedule',
       icon: <Calendar className="w-4 h-4" />,
-      badge: leads.filter((l) => Boolean(l.scheduledDate || l.initialSentDate)).length,
+      badge: leads.filter((l) => !!l.scheduledDate).length,
     },
     {
       id: 'mockup',
@@ -181,7 +180,7 @@ export function ChannelWorkspace({
           <div className="w-px h-6 bg-white/10" />
           <div>
             <span className="text-slate-500 block text-[10px] uppercase font-sans">Scheduled</span>
-            <strong className="text-slate-100 tabular-nums">{leads.filter((l) => Boolean(l.scheduledDate || l.initialSentDate)).length}</strong>
+            <strong className="text-slate-100 tabular-nums">{leads.filter((l) => !!l.scheduledDate).length}</strong>
           </div>
         </div>
       </div>

@@ -68,7 +68,6 @@ import {
   isDateToday,
   getNextAvailableScheduleDate,
   getCadenceMessageTemplates,
-  resolveLeadCadenceStep,
 } from '../../utils/cadenceEngine';
 import {
   findNormalizedDuplicateMatches,
@@ -138,9 +137,8 @@ function SortableLeadRow({
     disabled: !canDrag ? { draggable: true, droppable: true } : false,
   });
 
-  const dayStyle = getScheduleDayStyle(lead.scheduledDate || lead.initialSentDate);
-  const resolved = resolveLeadCadenceStep(lead, getLocalTodayStr());
-  const isDueToday = isDateToday(lead.scheduledDate) || resolved.isFollowupDue;
+  const dayStyle = getScheduleDayStyle(lead.scheduledDate);
+  const isDueToday = isDateToday(lead.scheduledDate);
 
   const initial = (lead.initialDM || lead.customPitch || '').trim();
   const d4 = (lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '').trim();
@@ -165,7 +163,7 @@ function SortableLeadRow({
 
   const lockTooltip =
     lockReason === 'sent'
-      ? 'Locked: Already in sequence (initial sent) — position & ID cannot be changed'
+      ? 'Locked: Already sent — position & ID cannot be changed'
       : lockReason === 'warmed'
       ? 'Locked: Already warmed up — position & ID cannot be changed'
       : '';
@@ -279,19 +277,6 @@ function SortableLeadRow({
             );
           })()}
 
-          {lead.initialSentDate && (
-            <span
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold font-mono border bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-              title={`Initial DM sent on ${lead.initialSentDate} (${resolved.daysSinceInitial} days ago)`}
-            >
-              <span>Initial · {lead.initialSentDate.split('-').slice(1).join('/')}</span>
-              {resolved.isFollowupDue && resolved.stageNumber ? (
-                <span className="text-amber-300 font-bold">· Day {resolved.stageNumber} Due</span>
-              ) : (
-                <span className="opacity-75">· Day {resolved.daysSinceInitial}</span>
-              )}
-            </span>
-          )}
           {lead.scheduledDate && (
             <span
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold font-mono border ${dayStyle.badgeClass}`}
