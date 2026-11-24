@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Trash2,
   Download,
@@ -46,6 +46,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { ChannelLead, MultiChannelType, VoiceType } from '../../types';
 import {
+  getChannelPrefix,
   getNextLeadId,
   extractSuggestedName,
   exportChannelData,
@@ -56,6 +57,7 @@ import {
   validateChannelLink,
   getLeadLockReason,
   reorderChannelLeadsWithFixedLocks,
+  moveChannelLeadToNumericId,
   LeadLockReason,
 } from '../../utils/channelStorage';
 import {
@@ -108,6 +110,7 @@ interface SortableLeadRowProps {
   isDndEnabled: boolean;
   isSelected: boolean;
   onToggleSelect: (id: string) => void;
+  onMoveToNumber: (leadId: string, targetNumber: number) => void;
   onOpenEditSequence: (lead: ChannelLead) => void;
   onDeleteLead: (id: string) => void;
 }
@@ -119,11 +122,47 @@ function SortableLeadRow({
   isDndEnabled,
   isSelected,
   onToggleSelect,
+  onMoveToNumber,
   onOpenEditSequence,
   onDeleteLead,
 }: SortableLeadRowProps) {
   const isFixed = lockReason !== null;
   const canDrag = isDndEnabled && !isFixed;
+  const [isEditingId, setIsEditingId] = useState(false);
+  const [idInputValue, setIdInputValue] = useState('');
+  const skipBlurCommitRef = useRef(false);
+  const channelPrefix = getChannelPrefix(channel);
+  const currentNumericId =
+    typeof lead.numericId === 'number' && Number.isFinite(lead.numericId) && lead.numericId > 0
+      ? lead.numericId
+      : (() => {
+          const match = String(lead.id || '').match(/(\d+)$/);
+          return match ? parseInt(match[1], 10) : 1;
+        })();
+
+  const startEditingId = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isFixed) return;
+    skipBlurCommitRef.current = false;
+    setIdInputValue(String(currentNumericId));
+    setIsEditingId(true);
+  };
+
+  const cancelEditingId = () => {
+    skipBlurCommitRef.current = true;
+    setIsEditingId(false);
+    setIdInputValue('');
+  };
+
+  const commitIdMove = () => {
+    if (skipBlurCommitRef.current) return;
+    skipBlurCommitRef.current = true;
+    const parsed = parseInt(idInputValue.trim(), 10);
+    setIsEditingId(false);
+    setIdInputValue('');
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed === currentNumericId) return;
+    onMoveToNumber(lead.id, parsed);
+  };
 
   const {
     attributes,
@@ -230,9 +269,61 @@ function SortableLeadRow({
             </span>
           )}
 
-          <span className="font-semibold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded border border-indigo-500/20">
-            {lead.id}
-          </span>
+          {isFixed ? (
+            <span className="font-semibold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded border border-indigo-500/20">
+              {lead.id}
+            </span>
+          ) : isEditingId ? (
+            <div
+              className="inline-flex items-center gap-1 bg-slate-900 border border-indigo-500/70 rounded px-1.5 py-0.5 shadow-sm shadow-indigo-500/20"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span className="text-indigo-400 font-semibold text-xs select-none">{channelPrefix}-</span>
+              <input
+                type="number"
+                min={1}
+                autoFocus
+                value={idInputValue}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => setIdInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commitIdMove();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelEditingId();
+                  }
+                }}
+                onBlur={commitIdMove}
+                aria-label={`Move ${lead.name} to ID number`}
+                className="w-12 bg-transparent text-white font-bold text-xs font-mono tabular-nums focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  commitIdMove();
+                }}
+                className="text-emerald-400 hover:text-emerald-300 text-[11px] font-bold px-1 cursor-pointer"
+                title="Move to this ID number (Enter)"
+                aria-label="Confirm ID move"
+              >
+                ✓
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={startEditingId}
+              className="font-semibold text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/25 hover:text-indigo-200 px-2.5 py-1 rounded border border-indigo-500/20 hover:border-indigo-400/60 transition-colors cursor-pointer"
+              title="Click to type a new ID number (e.g. type 3 to jump straight to #3)"
+            >
+              {lead.id}
+            </button>
+          )}
 
           {isFixed && (
             <span
@@ -480,6 +571,7 @@ export function LeadsSubPage({
 
   // Edit Sequence Modal State (Requirement 4)
   const [editingLead, setEditingLead] = useState<ChannelLead | null>(null);
+  const [rawPromptText, setRawPromptText] = useState('');
   const [initialDmText, setInitialDmText] = useState('');
   const [day4Text, setDay4Text] = useState('');
   const [day8Text, setDay8Text] = useState('');
@@ -615,9 +707,27 @@ export function LeadsSubPage({
     }
   };
 
+  const handleMoveLeadToNumber = (leadId: string, targetNumber: number) => {
+    const result = moveChannelLeadToNumericId(leads, leadId, targetNumber, channel);
+    if (result.movedLead && result.newId && result.oldId !== result.newId) {
+      onUpdateLeads(result.reorderedLeads);
+      setAddedToast(
+        result.adjustedForLock && result.requestedId
+          ? `Moved "${result.movedLead.name}": ${result.oldId} → ${result.newId} (${result.requestedId} is locked)`
+          : `Moved "${result.movedLead.name}": ${result.oldId} → ${result.newId}`
+      );
+    }
+  };
+
   // Open Edit Sequence Modal (starts empty unless operator has written text)
   const handleOpenEditSequence = (lead: ChannelLead) => {
     setEditingLead(lead);
+    const initialRawPrompt =
+      lead.prompt ||
+      lead.leadAnalysis ||
+      (lead.customPitch && lead.customPitch !== lead.initialDM ? lead.customPitch : '') ||
+      '';
+    setRawPromptText(initialRawPrompt);
     setInitialDmText(lead.initialDM || lead.customPitch || '');
     setDay4Text(lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '');
     setDay8Text(lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '');
@@ -629,6 +739,7 @@ export function LeadsSubPage({
   const handleSaveSequence = () => {
     if (!editingLead) return;
 
+    const trimmedPrompt = rawPromptText.trim();
     const trimmedInitial = initialDmText.trim();
     const trimmedDay4 = day4Text.trim();
     const trimmedDay8 = day8Text.trim();
@@ -647,6 +758,11 @@ export function LeadsSubPage({
       if (l.id === editingLead.id) {
         return {
           ...l,
+          prompt: trimmedPrompt || undefined,
+          leadAnalysis: trimmedPrompt || undefined,
+          analysisSavedAt: trimmedPrompt
+            ? new Date().toISOString()
+            : undefined,
           initialDM: trimmedInitial,
           customPitch: trimmedInitial,
           stagedDmMiniPitch: trimmedInitial,
@@ -1436,13 +1552,13 @@ export function LeadsSubPage({
             <div className="flex items-center gap-2">
               {isFiltered ? (
                 <span className="text-amber-300 font-medium">
-                  Clear search or type filter to drag-reorder lead IDs
+                  Clear search or type filter to drag-reorder — or click any unlocked ID badge to jump to a #
                 </span>
               ) : (
                 <span className="flex items-center gap-1.5">
                   <GripVertical className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                   <span>
-                    Click and drag any unlocked lead row to change its ID position.
+                    Drag any unlocked lead row, or click an ID badge to type a target # (e.g. 3).
                   </span>
                 </span>
               )}
@@ -1513,6 +1629,7 @@ export function LeadsSubPage({
                         isDndEnabled={!isFiltered}
                         isSelected={selectedLeadIds.has(lead.id)}
                         onToggleSelect={toggleSelectLead}
+                        onMoveToNumber={handleMoveLeadToNumber}
                         onOpenEditSequence={handleOpenEditSequence}
                         onDeleteLead={handleDeleteLead}
                       />
@@ -1556,24 +1673,18 @@ export function LeadsSubPage({
               </button>
             </div>
 
-            {/* Lead Analysis / Prompt Viewer */}
+            {/* Lead Analysis / Raw Prompt Editor */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-indigo-300 font-mono flex items-center gap-1.5">
                   <FileText className="w-4 h-4 text-indigo-400" />
-                  <span>Lead Engine Analysis &amp; Sourced Prompt</span>
+                  <span>Raw Strategy Prompt &amp; Lead Analysis</span>
                 </span>
                 <button
                   type="button"
-                  onClick={() =>
-                    handleCopyPrompt(
-                      editingLead.prompt ||
-                        editingLead.leadAnalysis ||
-                        editingLead.customPitch ||
-                        ''
-                    )
-                  }
-                  className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
+                  disabled={!rawPromptText.trim()}
+                  onClick={() => handleCopyPrompt(rawPromptText)}
+                  className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
                 >
                   {copiedPrompt ? (
                     <>
@@ -1583,18 +1694,19 @@ export function LeadsSubPage({
                   ) : (
                     <>
                       <Copy className="w-3.5 h-3.5 text-slate-400" />
-                      <span>Copy Analysis</span>
+                      <span>Copy Prompt</span>
                     </>
                   )}
                 </button>
               </div>
 
-              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-200 font-mono whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
-                {editingLead.prompt ||
-                  editingLead.leadAnalysis ||
-                  editingLead.customPitch ||
-                  'No strategy prompt attached to this lead.'}
-              </div>
+              <textarea
+                rows={5}
+                value={rawPromptText}
+                onChange={(e) => setRawPromptText(e.target.value)}
+                placeholder="Paste or edit the raw strategy prompt / Gemini lead analysis..."
+                className="w-full p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-100 font-mono placeholder-slate-600 leading-relaxed focus:outline-none focus:border-indigo-500 resize-y"
+              />
             </div>
 
             {/* The 4 Sequence Messages */}
@@ -1734,7 +1846,7 @@ export function LeadsSubPage({
                   className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 cursor-pointer active:scale-95"
                 >
                   <Save className="w-4 h-4" />
-                  <span>Save Sequence to Lead</span>
+                  <span>Save Prompt &amp; Sequence</span>
                 </button>
               </div>
             </div>

@@ -16,6 +16,9 @@ import {
   Mail,
   ArrowRight,
   AlertTriangle,
+  Edit3,
+  Save,
+  X,
 } from 'lucide-react';
 import { InboxLead, MultiChannelType, ChannelLead } from '../types';
 import {
@@ -59,6 +62,8 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
   const [inboxLeads, setInboxLeads] = useState<InboxLead[]>(() => loadInboxLeads());
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
+  const [promptDraft, setPromptDraft] = useState('');
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -553,39 +558,110 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
                             </div>
                           )}
 
-                          {/* Prompt Block */}
-                          {lead.prompt ? (
+                          {/* Prompt Block (Editable) */}
+                          {editingPromptId === lead.id ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between text-[11px] text-indigo-300 font-semibold">
+                                <span className="flex items-center gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                                  <span>Editing Raw Prompt:</span>
+                                </span>
+                              </div>
+                              <textarea
+                                rows={4}
+                                value={promptDraft}
+                                onChange={(e) => setPromptDraft(e.target.value)}
+                                placeholder="Paste or edit raw outreach prompt / analysis..."
+                                className="w-full rounded-xl border border-indigo-500/50 bg-black/60 p-3 text-xs text-slate-100 font-mono leading-relaxed focus:outline-none focus:border-indigo-400 resize-y"
+                              />
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPromptId(null);
+                                    setPromptDraft('');
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+                                >
+                                  <X className="w-3 h-3" />
+                                  <span>Cancel</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const clean = promptDraft.trim();
+                                    const updated = inboxLeads.map((item) =>
+                                      item.id === lead.id ? { ...item, prompt: clean } : item
+                                    );
+                                    setInboxLeads(updated);
+                                    saveInboxLeads(updated);
+                                    setEditingPromptId(null);
+                                    setPromptDraft('');
+                                    showToast(`Saved raw prompt for "${lead.name}".`, 'info');
+                                  }}
+                                  className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                                >
+                                  <Save className="w-3 h-3" />
+                                  <span>Save Prompt</span>
+                                </button>
+                              </div>
+                            </div>
+                          ) : lead.prompt ? (
                             <div className="space-y-1">
                               <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold">
                                 <span className="flex items-center gap-1.5">
                                   <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                                   <span>Generated Outreach Prompt / Pitch:</span>
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyPrompt(lead.id, lead.prompt)}
-                                  className="text-[11px] text-indigo-400 hover:text-white flex items-center gap-1 transition cursor-pointer font-sans"
-                                >
-                                  {copiedId === lead.id ? (
-                                    <>
-                                      <Check className="w-3 h-3 text-emerald-400" />
-                                      <span className="text-emerald-400 font-bold">Copied</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="w-3 h-3" />
-                                      <span>Copy Prompt</span>
-                                    </>
-                                  )}
-                                </button>
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingPromptId(lead.id);
+                                      setPromptDraft(lead.prompt || '');
+                                    }}
+                                    className="text-[11px] text-slate-300 hover:text-white flex items-center gap-1 transition cursor-pointer font-sans"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>Edit Prompt</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyPrompt(lead.id, lead.prompt)}
+                                    className="text-[11px] text-indigo-400 hover:text-white flex items-center gap-1 transition cursor-pointer font-sans"
+                                  >
+                                    {copiedId === lead.id ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                        <span className="text-emerald-400 font-bold">Copied</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>Copy Prompt</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
                               </div>
                               <div className="rounded-xl border border-white/5 bg-black/40 p-3 text-xs text-slate-300 font-sans leading-relaxed whitespace-pre-wrap max-h-36 overflow-y-auto selection:bg-purple-500/30">
                                 {lead.prompt}
                               </div>
                             </div>
                           ) : (
-                            <div className="text-xs text-slate-500 italic">
-                              No prompt attached to this lead entry.
+                            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 italic">
+                              <span>No prompt attached to this lead entry.</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingPromptId(lead.id);
+                                  setPromptDraft('');
+                                }}
+                                className="not-italic text-[11px] text-indigo-400 hover:text-white font-semibold flex items-center gap-1 transition cursor-pointer"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>Add Prompt</span>
+                              </button>
                             </div>
                           )}
                         </div>

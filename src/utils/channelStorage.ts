@@ -433,6 +433,143 @@ export function reorderChannelLeadsWithFixedLocks(
 }
 
 /**
+ * Moves an unlocked lead directly to a target numeric ID (e.g. moving #100 -> #3 shifts #3 -> #4, #4 -> #5, ...)
+ * while keeping already warmed-up and already sent leads strictly fixed at their exact indices and IDs.
+ */
+export function moveChannelLeadToNumericId(
+  leads: ChannelLead[],
+  activeLeadId: string,
+  targetNumericId: number,
+  channel: MultiChannelType
+): {
+  reorderedLeads: ChannelLead[];
+  movedLead?: ChannelLead;
+  oldId?: string;
+  newId?: string;
+  requestedId?: string;
+  adjustedForLock?: boolean;
+} {
+  if (!leads || leads.length === 0 || !Number.isFinite(targetNumericId)) {
+    return { reorderedLeads: leads };
+  }
+
+  const normalizedTarget = Math.max(1, Math.floor(targetNumericId));
+  const prefix = getChannelPrefix(channel);
+  const requestedId = `${prefix}-${normalizedTarget}`;
+
+  const ordered = [...leads].sort(
+    (a, b) => (a.numericId ?? a.sortOrder ?? 0) - (b.numericId ?? b.sortOrder ?? 0)
+  );
+
+  const activeIndex = ordered.findIndex((l) => l.id === activeLeadId);
+  if (activeIndex === -1 || isLeadPositionFixed(ordered[activeIndex])) {
+    return { reorderedLeads: leads };
+  }
+
+  const movableSlotIndices: number[] = [];
+  const fixedNums = new Set<number>();
+  for (let i = 0; i < ordered.length; i++) {
+    if (isLeadPositionFixed(ordered[i])) {
+      const fixedSeq = ordered[i].numericId && ordered[i].numericId! > 0 ? ordered[i].numericId! : i + 1;
+      fixedNums.add(fixedSeq);
+    } else {
+      movableSlotIndices.push(i);
+    }
+  }
+
+  const fromMovablePos = movableSlotIndices.indexOf(activeIndex);
+  if (fromMovablePos === -1 || movableSlotIndices.length <= 1) {
+    return { reorderedLeads: leads };
+  }
+
+  // Compute the sequential free numeric IDs assigned to each movable slot
+  const slotFreeNums: number[] = [];
+  let nextFree = 1;
+  for (let m = 0; m < movableSlotIndices.length; m++) {
+    while (fixedNums.has(nextFree)) {
+      nextFree++;
+    }
+    slotFreeNums.push(nextFree);
+    nextFree++;
+  }
+
+  let toMovablePos = slotFreeNums.indexOf(normalizedTarget);
+  const adjustedForLock = fixedNums.has(normalizedTarget);
+  if (toMovablePos === -1) {
+    const firstAtOrAfter = slotFreeNums.findIndex((num) => num >= normalizedTarget);
+    toMovablePos = firstAtOrAfter !== -1 ? firstAtOrAfter : slotFreeNums.length - 1;
+  }
+
+  if (toMovablePos === fromMovablePos) {
+    return { reorderedLeads: leads };
+  }
+
+  const movableSlotDates = movableSlotIndices.map((idx) => ordered[idx].scheduledDate);
+  const movableLeads = movableSlotIndices.map((idx) => ordered[idx]);
+
+  const [movedItem] = movableLeads.splice(fromMovablePos, 1);
+  movableLeads.splice(toMovablePos, 0, movedItem);
+
+  const merged = [...ordered];
+  movableSlotIndices.forEach((slotIdx, mIdx) => {
+    merged[slotIdx] = {
+      ...movableLeads[mIdx],
+      scheduledDate: movableSlotDates[mIdx],
+    };
+  });
+
+  let movedLead: ChannelLead | undefined;
+  let newId: string | undefined;
+  let nextMovableNum = 1;
+
+  const reorderedLeads = merged.map((lead, idx) => {
+    if (isLeadPositionFixed(lead)) {
+      const fixedSeq = lead.numericId && lead.numericId > 0 ? lead.numericId : idx + 1;
+      return {
+        ...lead,
+        numericId: fixedSeq,
+        id: `${prefix}-${fixedSeq}`,
+        voiceType: getStrictVoiceTypeForId(fixedSeq, channel),
+        isVoiceTypeOverridden: false,
+        sortOrder: idx,
+      };
+    }
+
+    while (fixedNums.has(nextMovableNum)) {
+      nextMovableNum++;
+    }
+    const seq = nextMovableNum;
+    nextMovableNum++;
+    const computedId = `${prefix}-${seq}`;
+
+    const updated: ChannelLead = {
+      ...lead,
+      numericId: seq,
+      id: computedId,
+      sortOrder: idx,
+      voiceType: getStrictVoiceTypeForId(seq, channel),
+      isVoiceTypeOverridden: false,
+    };
+
+    if (lead.id === activeLeadId) {
+      movedLead = updated;
+      newId = computedId;
+    }
+
+    return updated;
+  });
+
+  return {
+    reorderedLeads,
+    movedLead,
+    oldId: activeLeadId,
+    newId,
+    requestedId,
+    adjustedForLock,
+  };
+}
+
+/**
  * Generates the exact DeepSeek outreach strategy prompt for Ridge Creative Web Studio,
  * wrapping the pasted Gemini lead analysis directly without automatic alteration.
  */

@@ -165,12 +165,14 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
   };
 
   const handleSaveLeadAnalysis = (leadId: string, analysisText: string) => {
+    const clean = analysisText.trim() || undefined;
     const updated = leads.map((l) => {
       if (l.id === leadId) {
         return {
           ...l,
-          leadAnalysis: analysisText.trim() || undefined,
-          analysisSavedAt: new Date().toISOString(),
+          prompt: clean,
+          leadAnalysis: clean,
+          analysisSavedAt: clean ? new Date().toISOString() : undefined,
         };
       }
       return l;

@@ -19,6 +19,7 @@ export interface AnalyzableLead {
   name: string;
   link: string;
   channel?: string;
+  prompt?: string;
   leadAnalysis?: string;
   analysisSavedAt?: string;
 }
@@ -44,7 +45,7 @@ export const LeadAnalysisModal: React.FC<LeadAnalysisModalProps> = ({
 
   useEffect(() => {
     if (lead) {
-      setAnalysisText(lead.leadAnalysis || '');
+      setAnalysisText(lead.leadAnalysis || lead.prompt || '');
       setCopiedType(null);
       setJustSaved(false);
     }
