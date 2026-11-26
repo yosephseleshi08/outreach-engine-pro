@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   Trash2,
   Download,
@@ -611,6 +611,16 @@ export function LeadsSubPage({
   const [rawPromptText, setRawPromptText] = useState('');
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [promptSaveSuccess, setPromptSaveSuccess] = useState(false);
+  const [promptDeletedFeedback, setPromptDeletedFeedback] = useState(false);
+  const promptModalRef = useRef<HTMLDivElement | null>(null);
+  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingPromptScrollRef = useRef<{
+    textareaTop: number;
+    modalTop: number;
+    windowX: number;
+    windowY: number;
+    resetCaretToStart: boolean;
+  } | null>(null);
 
   // Edit Sequence Modal State (Requirement 4)
   const [editingLead, setEditingLead] = useState<ChannelLead | null>(null);
@@ -760,8 +770,48 @@ export function LeadsSubPage({
     }
   };
 
+  // Keep Prompt Modal & textarea scroll stable on paste
+  useLayoutEffect(() => {
+    const pending = pendingPromptScrollRef.current;
+    if (!pending) return;
+
+    const restoreScroll = () => {
+      if (promptTextareaRef.current) {
+        if (pending.resetCaretToStart) {
+          promptTextareaRef.current.setSelectionRange(0, 0);
+        }
+        promptTextareaRef.current.scrollTop = pending.textareaTop;
+      }
+      if (promptModalRef.current) {
+        promptModalRef.current.scrollTop = pending.modalTop;
+      }
+      if (window.scrollY !== pending.windowY || window.scrollX !== pending.windowX) {
+        window.scrollTo(pending.windowX, pending.windowY);
+      }
+    };
+
+    restoreScroll();
+    const rafId = requestAnimationFrame(() => {
+      restoreScroll();
+      pendingPromptScrollRef.current = null;
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [rawPromptText]);
+
+  // Reset scroll to top when opening Prompt Modal for a lead
+  useLayoutEffect(() => {
+    if (!editingPromptLead) return;
+    if (promptTextareaRef.current) {
+      promptTextareaRef.current.scrollTop = 0;
+    }
+    if (promptModalRef.current) {
+      promptModalRef.current.scrollTop = 0;
+    }
+  }, [editingPromptLead?.id]);
+
   // Open Prompt Modal
   const handleOpenEditPrompt = (lead: ChannelLead) => {
+    pendingPromptScrollRef.current = null;
     setEditingPromptLead(lead);
     const initialRawPrompt =
       lead.prompt ||
@@ -771,6 +821,70 @@ export function LeadsSubPage({
     setRawPromptText(initialRawPrompt);
     setCopiedPrompt(false);
     setPromptSaveSuccess(false);
+    setPromptDeletedFeedback(false);
+  };
+
+  const handlePromptPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    const isReplacingAllOrEmpty =
+      el.value.length === 0 ||
+      (el.selectionStart === 0 && el.selectionEnd === el.value.length);
+    pendingPromptScrollRef.current = {
+      textareaTop: isReplacingAllOrEmpty ? 0 : el.scrollTop,
+      modalTop: promptModalRef.current?.scrollTop ?? 0,
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+      resetCaretToStart: isReplacingAllOrEmpty,
+    };
+  };
+
+  const handleDeletePrompt = () => {
+    if (!editingPromptLead) return;
+
+    pendingPromptScrollRef.current = null;
+    setRawPromptText('');
+    setCopiedPrompt(false);
+    setPromptSaveSuccess(false);
+
+    const updated = leads.map((l) => {
+      if (l.id === editingPromptLead.id) {
+        return {
+          ...l,
+          prompt: undefined,
+          leadAnalysis: undefined,
+          analysisSavedAt: undefined,
+          customPitch:
+            l.customPitch && l.customPitch !== l.initialDM
+              ? l.initialDM || ''
+              : l.customPitch,
+        };
+      }
+      return l;
+    });
+
+    onUpdateLeads(updated);
+    setEditingPromptLead((prev) =>
+      prev
+        ? {
+            ...prev,
+            prompt: undefined,
+            leadAnalysis: undefined,
+            analysisSavedAt: undefined,
+          }
+        : null
+    );
+    setPromptDeletedFeedback(true);
+
+    requestAnimationFrame(() => {
+      if (promptTextareaRef.current) {
+        promptTextareaRef.current.scrollTop = 0;
+        promptTextareaRef.current.focus({ preventScroll: true });
+      }
+    });
+
+    setTimeout(() => {
+      setPromptDeletedFeedback(false);
+    }, 2500);
   };
 
   const handleSavePrompt = () => {
@@ -794,6 +908,7 @@ export function LeadsSubPage({
     });
 
     onUpdateLeads(updated);
+    setPromptDeletedFeedback(false);
     setPromptSaveSuccess(true);
     setTimeout(() => {
       setPromptSaveSuccess(false);
@@ -1715,7 +1830,10 @@ export function LeadsSubPage({
       {/* Prompt Modal */}
       {editingPromptLead && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-          <div className="w-full max-w-2xl rounded-3xl bg-slate-900 border border-white/10 p-6 sm:p-7 shadow-2xl space-y-5 text-slate-100 max-h-[92vh] overflow-y-auto">
+          <div
+            ref={promptModalRef}
+            className="w-full max-w-2xl rounded-3xl bg-slate-900 border border-white/10 p-6 sm:p-7 shadow-2xl space-y-5 text-slate-100 max-h-[92vh] overflow-y-auto [overflow-anchor:none]"
+          >
             {/* Header */}
             <div className="flex items-start justify-between border-b border-white/10 pb-4">
               <div>
@@ -1750,7 +1868,7 @@ export function LeadsSubPage({
                   <FileText className="w-4 h-4 text-indigo-400" />
                   <span>Raw Strategy Prompt &amp; Lead Analysis</span>
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span
                     className={`text-[10px] font-mono px-2.5 py-1 rounded-lg font-bold border flex items-center gap-1.5 ${
                       rawPromptText.trim().length > 0
@@ -1774,7 +1892,7 @@ export function LeadsSubPage({
                     type="button"
                     disabled={!rawPromptText.trim()}
                     onClick={() => handleCopyPrompt(rawPromptText)}
-                    className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
                   >
                     {copiedPrompt ? (
                       <>
@@ -1788,15 +1906,30 @@ export function LeadsSubPage({
                       </>
                     )}
                   </button>
+                  <button
+                    type="button"
+                    disabled={!rawPromptText.trim()}
+                    onClick={handleDeletePrompt}
+                    className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium text-rose-300 hover:text-rose-200 border border-rose-500/25 flex items-center gap-1 transition cursor-pointer"
+                    title="Delete prompt from this lead"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Delete Prompt</span>
+                  </button>
                 </div>
               </div>
 
               <textarea
+                ref={promptTextareaRef}
                 rows={9}
                 value={rawPromptText}
-                onChange={(e) => setRawPromptText(e.target.value)}
+                onPaste={handlePromptPaste}
+                onChange={(e) => {
+                  setRawPromptText(e.target.value);
+                  if (promptDeletedFeedback) setPromptDeletedFeedback(false);
+                }}
                 placeholder="Paste or edit the raw strategy prompt / Gemini lead analysis..."
-                className="w-full p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-100 font-mono placeholder-slate-600 leading-relaxed focus:outline-none focus:border-indigo-500 resize-y"
+                className="w-full h-64 min-h-[180px] p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-100 font-mono placeholder-slate-600 leading-relaxed focus:outline-none focus:border-indigo-500 resize-y overflow-y-auto [overflow-anchor:none]"
               />
             </div>
 
@@ -1810,6 +1943,11 @@ export function LeadsSubPage({
                       ? 'Prompt saved (Button is Green)!'
                       : 'Prompt cleared (Button is Blue).'}
                   </span>
+                </span>
+              ) : promptDeletedFeedback ? (
+                <span className="text-xs text-rose-300 font-bold font-mono flex items-center gap-1.5 animate-in fade-in">
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Prompt deleted (Button is Blue).</span>
                 </span>
               ) : (
                 <span className="text-[11px] text-slate-500">
