@@ -111,6 +111,7 @@ interface SortableLeadRowProps {
   isSelected: boolean;
   onToggleSelect: (id: string) => void;
   onMoveToNumber: (leadId: string, targetNumber: number) => void;
+  onOpenEditPrompt: (lead: ChannelLead) => void;
   onOpenEditSequence: (lead: ChannelLead) => void;
   onDeleteLead: (id: string) => void;
 }
@@ -123,6 +124,7 @@ function SortableLeadRow({
   isSelected,
   onToggleSelect,
   onMoveToNumber,
+  onOpenEditPrompt,
   onOpenEditSequence,
   onDeleteLead,
 }: SortableLeadRowProps) {
@@ -178,6 +180,13 @@ function SortableLeadRow({
 
   const dayStyle = getScheduleDayStyle(lead.scheduledDate);
   const isDueToday = isDateToday(lead.scheduledDate);
+
+  const hasPrompt = (
+    lead.prompt ||
+    lead.leadAnalysis ||
+    (lead.customPitch && lead.customPitch !== lead.initialDM ? lead.customPitch : '') ||
+    ''
+  ).trim().length > 0;
 
   const initial = (lead.initialDM || lead.customPitch || '').trim();
   const d4 = (lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '').trim();
@@ -385,33 +394,61 @@ function SortableLeadRow({
         </div>
       </td>
 
-      {/* 3. Prompt / Edit Sequence Button */}
+      {/* 3. Separate Prompt & Edit Sequence Buttons */}
       <td className="py-3.5 px-4 text-left">
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => onOpenEditSequence(lead)}
-          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-sm ${
-            isGreen
-              ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 hover:text-white border border-emerald-500/40 shadow-emerald-500/10'
-              : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 hover:text-white border border-indigo-500/30 shadow-indigo-500/10'
-          }`}
-          title={
-            isGreen
-              ? 'All 4 sequences written & configured! Click to review or adjust.'
-              : 'Sequence incomplete. Write all 4 messages (Initial, Day 4, Day 8, Day 14) to turn button green.'
-          }
-        >
-          {isGreen ? (
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          ) : (
-            <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-          )}
-          <span>Prompt / Edit Sequence</span>
-          {isGreen && (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          )}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onOpenEditPrompt(lead)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-sm ${
+              hasPrompt
+                ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 hover:text-white border border-emerald-500/40 shadow-emerald-500/10'
+                : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 hover:text-white border border-indigo-500/30 shadow-indigo-500/10'
+            }`}
+            title={
+              hasPrompt
+                ? 'Prompt saved! Click to view or edit prompt.'
+                : 'Prompt empty. Add a prompt to turn button green.'
+            }
+          >
+            {hasPrompt ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            ) : (
+              <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            )}
+            <span>Prompt</span>
+            {hasPrompt && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onOpenEditSequence(lead)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-sm ${
+              isGreen
+                ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 hover:text-white border border-emerald-500/40 shadow-emerald-500/10'
+                : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 hover:text-white border border-indigo-500/30 shadow-indigo-500/10'
+            }`}
+            title={
+              isGreen
+                ? 'All 4 sequences written & configured! Click to review or adjust.'
+                : 'Sequence incomplete. Write all 4 messages (Initial, Day 4, Day 8, Day 14) to turn button green.'
+            }
+          >
+            {isGreen ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            )}
+            <span>Edit Sequence</span>
+            {isGreen && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            )}
+          </button>
+        </div>
       </td>
 
       {/* 4. Action: Soft Delete to Backstage Button */}
@@ -569,14 +606,18 @@ export function LeadsSubPage({
     }
   }, [leads, channel, onUpdateLeads]);
 
+  // Prompt Modal State
+  const [editingPromptLead, setEditingPromptLead] = useState<ChannelLead | null>(null);
+  const [rawPromptText, setRawPromptText] = useState('');
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [promptSaveSuccess, setPromptSaveSuccess] = useState(false);
+
   // Edit Sequence Modal State (Requirement 4)
   const [editingLead, setEditingLead] = useState<ChannelLead | null>(null);
-  const [rawPromptText, setRawPromptText] = useState('');
   const [initialDmText, setInitialDmText] = useState('');
   const [day4Text, setDay4Text] = useState('');
   const [day8Text, setDay8Text] = useState('');
   const [day14Text, setDay14Text] = useState('');
-  const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
@@ -719,27 +760,60 @@ export function LeadsSubPage({
     }
   };
 
-  // Open Edit Sequence Modal (starts empty unless operator has written text)
-  const handleOpenEditSequence = (lead: ChannelLead) => {
-    setEditingLead(lead);
+  // Open Prompt Modal
+  const handleOpenEditPrompt = (lead: ChannelLead) => {
+    setEditingPromptLead(lead);
     const initialRawPrompt =
       lead.prompt ||
       lead.leadAnalysis ||
       (lead.customPitch && lead.customPitch !== lead.initialDM ? lead.customPitch : '') ||
       '';
     setRawPromptText(initialRawPrompt);
+    setCopiedPrompt(false);
+    setPromptSaveSuccess(false);
+  };
+
+  const handleSavePrompt = () => {
+    if (!editingPromptLead) return;
+
+    const trimmedPrompt = rawPromptText.trim();
+    const updated = leads.map((l) => {
+      if (l.id === editingPromptLead.id) {
+        return {
+          ...l,
+          prompt: trimmedPrompt || undefined,
+          leadAnalysis: trimmedPrompt || undefined,
+          analysisSavedAt: trimmedPrompt ? new Date().toISOString() : undefined,
+          customPitch:
+            !trimmedPrompt && l.customPitch && l.customPitch !== l.initialDM
+              ? l.initialDM || ''
+              : l.customPitch,
+        };
+      }
+      return l;
+    });
+
+    onUpdateLeads(updated);
+    setPromptSaveSuccess(true);
+    setTimeout(() => {
+      setPromptSaveSuccess(false);
+      setEditingPromptLead(null);
+    }, 1000);
+  };
+
+  // Open Edit Sequence Modal (starts empty unless operator has written text)
+  const handleOpenEditSequence = (lead: ChannelLead) => {
+    setEditingLead(lead);
     setInitialDmText(lead.initialDM || lead.customPitch || '');
     setDay4Text(lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '');
     setDay8Text(lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '');
     setDay14Text(lead.breakupDM_Day14 || lead.breakupDM_Day30 || '');
-    setCopiedPrompt(false);
     setSaveSuccess(false);
   };
 
   const handleSaveSequence = () => {
     if (!editingLead) return;
 
-    const trimmedPrompt = rawPromptText.trim();
     const trimmedInitial = initialDmText.trim();
     const trimmedDay4 = day4Text.trim();
     const trimmedDay8 = day8Text.trim();
@@ -758,11 +832,6 @@ export function LeadsSubPage({
       if (l.id === editingLead.id) {
         return {
           ...l,
-          prompt: trimmedPrompt || undefined,
-          leadAnalysis: trimmedPrompt || undefined,
-          analysisSavedAt: trimmedPrompt
-            ? new Date().toISOString()
-            : undefined,
           initialDM: trimmedInitial,
           customPitch: trimmedInitial,
           stagedDmMiniPitch: trimmedInitial,
@@ -1599,7 +1668,7 @@ export function LeadsSubPage({
                     </div>
                   </th>
                   <th className="py-3 px-4 text-left">Prospect Name</th>
-                  <th className="py-3 px-4 text-left w-64">Sequence Configuration</th>
+                  <th className="py-3 px-4 text-left w-72">Prompt &amp; Sequence</th>
                   <th className="py-3 px-4 text-right w-20">Action</th>
                 </tr>
               </thead>
@@ -1630,6 +1699,7 @@ export function LeadsSubPage({
                         isSelected={selectedLeadIds.has(lead.id)}
                         onToggleSelect={toggleSelectLead}
                         onMoveToNumber={handleMoveLeadToNumber}
+                        onOpenEditPrompt={handleOpenEditPrompt}
                         onOpenEditSequence={handleOpenEditSequence}
                         onDeleteLead={handleDeleteLead}
                       />
@@ -1642,7 +1712,134 @@ export function LeadsSubPage({
         </div>
       </div>
 
-      {/* Requirement 4: Prompt / Edit Sequence Modal */}
+      {/* Prompt Modal */}
+      {editingPromptLead && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-2xl rounded-3xl bg-slate-900 border border-white/10 p-6 sm:p-7 shadow-2xl space-y-5 text-slate-100 max-h-[92vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-white/10 pb-4">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-xs font-bold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
+                    {editingPromptLead.id}
+                  </span>
+                  <span className="text-xs text-slate-400 font-mono">
+                    {getChannelLabel(editingPromptLead.channel)} Workspace
+                  </span>
+                </div>
+                <h3 className="text-xl font-black text-white font-['Outfit'] mt-1">
+                  Lead Prompt: {editingPromptLead.name}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Store or edit the raw strategy prompt and Gemini lead analysis. Button turns green once a prompt is saved.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingPromptLead(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Prompt Editor */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300 font-mono flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-indigo-400" />
+                  <span>Raw Strategy Prompt &amp; Lead Analysis</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-[10px] font-mono px-2.5 py-1 rounded-lg font-bold border flex items-center gap-1.5 ${
+                      rawPromptText.trim().length > 0
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                    }`}
+                  >
+                    {rawPromptText.trim().length > 0 ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Prompt Ready (Button will be Green)</span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Empty (Add prompt to turn Green)</span>
+                      </>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={!rawPromptText.trim()}
+                    onClick={() => handleCopyPrompt(rawPromptText)}
+                    className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
+                  >
+                    {copiedPrompt ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Copy Prompt</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <textarea
+                rows={9}
+                value={rawPromptText}
+                onChange={(e) => setRawPromptText(e.target.value)}
+                placeholder="Paste or edit the raw strategy prompt / Gemini lead analysis..."
+                className="w-full p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-100 font-mono placeholder-slate-600 leading-relaxed focus:outline-none focus:border-indigo-500 resize-y"
+              />
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-4 border-t border-white/10">
+              {promptSaveSuccess ? (
+                <span className="text-xs text-emerald-400 font-bold font-mono flex items-center gap-1.5 animate-in fade-in">
+                  <Check className="w-4 h-4 text-emerald-400" />
+                  <span>
+                    {rawPromptText.trim()
+                      ? 'Prompt saved (Button is Green)!'
+                      : 'Prompt cleared (Button is Blue).'}
+                  </span>
+                </span>
+              ) : (
+                <span className="text-[11px] text-slate-500">
+                  Use Copy Prompt to paste into your AI writer when drafting the 4-step sequence.
+                </span>
+              )}
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEditingPromptLead(null)}
+                  className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSavePrompt}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 cursor-pointer active:scale-95"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Save Prompt</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Requirement 4: Edit Sequence Modal */}
       {editingLead && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
           <div className="w-full max-w-3xl rounded-3xl bg-slate-900 border border-white/10 p-6 sm:p-7 shadow-2xl space-y-5 text-slate-100 max-h-[92vh] overflow-y-auto">
@@ -1658,7 +1855,7 @@ export function LeadsSubPage({
                   </span>
                 </div>
                 <h3 className="text-xl font-black text-white font-['Outfit'] mt-1">
-                  Cadence Writer &amp; Analysis: {editingLead.name}
+                  Cadence Writer: {editingLead.name}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Write and customize the 4 cadence messages for this lead. When the scheduled dispatch day arrives, the CRM will automatically serve the saved message.
@@ -1673,44 +1870,8 @@ export function LeadsSubPage({
               </button>
             </div>
 
-            {/* Lead Analysis / Raw Prompt Editor */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300 font-mono flex items-center gap-1.5">
-                  <FileText className="w-4 h-4 text-indigo-400" />
-                  <span>Raw Strategy Prompt &amp; Lead Analysis</span>
-                </span>
-                <button
-                  type="button"
-                  disabled={!rawPromptText.trim()}
-                  onClick={() => handleCopyPrompt(rawPromptText)}
-                  className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
-                >
-                  {copiedPrompt ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-slate-400" />
-                      <span>Copy Prompt</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              <textarea
-                rows={5}
-                value={rawPromptText}
-                onChange={(e) => setRawPromptText(e.target.value)}
-                placeholder="Paste or edit the raw strategy prompt / Gemini lead analysis..."
-                className="w-full p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-100 font-mono placeholder-slate-600 leading-relaxed focus:outline-none focus:border-indigo-500 resize-y"
-              />
-            </div>
-
             {/* The 4 Sequence Messages */}
-            <div className="border-t border-white/10 pt-4 space-y-4">
+            <div className="space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <h4 className="text-sm font-bold text-white font-['Outfit'] flex items-center gap-2">
                   <MessageSquare className="w-4 h-4 text-indigo-400" />
@@ -1846,7 +2007,7 @@ export function LeadsSubPage({
                   className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 cursor-pointer active:scale-95"
                 >
                   <Save className="w-4 h-4" />
-                  <span>Save Prompt &amp; Sequence</span>
+                  <span>Save Sequence to Lead</span>
                 </button>
               </div>
             </div>
