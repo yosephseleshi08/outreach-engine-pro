@@ -26,6 +26,7 @@ import {
   Calendar,
   GripVertical,
   Lock,
+  ClipboardPaste,
 } from 'lucide-react';
 import {
   DndContext,
@@ -610,6 +611,8 @@ export function LeadsSubPage({
   const [editingPromptLead, setEditingPromptLead] = useState<ChannelLead | null>(null);
   const [rawPromptText, setRawPromptText] = useState('');
   const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [pastedPrompt, setPastedPrompt] = useState(false);
+  const [promptPasteError, setPromptPasteError] = useState<string | null>(null);
   const [promptSaveSuccess, setPromptSaveSuccess] = useState(false);
   const [promptDeletedFeedback, setPromptDeletedFeedback] = useState(false);
   const promptModalRef = useRef<HTMLDivElement | null>(null);
@@ -628,7 +631,15 @@ export function LeadsSubPage({
   const [day4Text, setDay4Text] = useState('');
   const [day8Text, setDay8Text] = useState('');
   const [day14Text, setDay14Text] = useState('');
+  const [pastedSequenceStep, setPastedSequenceStep] = useState<
+    'initial' | 'day4' | 'day8' | 'day14' | null
+  >(null);
+  const [sequencePasteError, setSequencePasteError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const initialDmRef = useRef<HTMLTextAreaElement | null>(null);
+  const day4Ref = useRef<HTMLTextAreaElement | null>(null);
+  const day8Ref = useRef<HTMLTextAreaElement | null>(null);
+  const day14Ref = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (!duplicateAlert) return;
@@ -820,8 +831,49 @@ export function LeadsSubPage({
       '';
     setRawPromptText(initialRawPrompt);
     setCopiedPrompt(false);
+    setPastedPrompt(false);
+    setPromptPasteError(null);
     setPromptSaveSuccess(false);
     setPromptDeletedFeedback(false);
+  };
+
+  const getClipboardBlockedMessage = () => {
+    const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+    return isIframe
+      ? 'Preview iframe blocks clipboard read — press Ctrl+V now (works directly on your live site / full tab).'
+      : 'Clipboard permission blocked — allow Clipboard in the address bar, or press Ctrl+V now.';
+  };
+
+  const handlePastePromptFromClipboard = async () => {
+    setPromptPasteError(null);
+    if (!navigator.clipboard?.readText) {
+      setPromptPasteError(getClipboardBlockedMessage());
+      promptTextareaRef.current?.focus({ preventScroll: true });
+      return;
+    }
+
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      if (!clipboardText) {
+        setPromptPasteError('Clipboard is empty.');
+        return;
+      }
+
+      pendingPromptScrollRef.current = {
+        textareaTop: 0,
+        modalTop: promptModalRef.current?.scrollTop ?? 0,
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+        resetCaretToStart: true,
+      };
+      setRawPromptText(clipboardText);
+      setPromptDeletedFeedback(false);
+      setPastedPrompt(true);
+      setTimeout(() => setPastedPrompt(false), 1800);
+    } catch {
+      setPromptPasteError(getClipboardBlockedMessage());
+      promptTextareaRef.current?.focus({ preventScroll: true });
+    }
   };
 
   const handlePromptPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -923,7 +975,53 @@ export function LeadsSubPage({
     setDay4Text(lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '');
     setDay8Text(lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '');
     setDay14Text(lead.breakupDM_Day14 || lead.breakupDM_Day30 || '');
+    setPastedSequenceStep(null);
+    setSequencePasteError(null);
     setSaveSuccess(false);
+  };
+
+  const focusSequenceStep = (step: 'initial' | 'day4' | 'day8' | 'day14') => {
+    const targetRef =
+      step === 'initial'
+        ? initialDmRef
+        : step === 'day4'
+        ? day4Ref
+        : step === 'day8'
+        ? day8Ref
+        : day14Ref;
+    targetRef.current?.focus({ preventScroll: true });
+  };
+
+  const handlePasteSequenceStep = async (
+    step: 'initial' | 'day4' | 'day8' | 'day14'
+  ) => {
+    setSequencePasteError(null);
+    if (!navigator.clipboard?.readText) {
+      setSequencePasteError(getClipboardBlockedMessage());
+      focusSequenceStep(step);
+      return;
+    }
+
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      if (!clipboardText) {
+        setSequencePasteError('Clipboard is empty.');
+        return;
+      }
+
+      if (step === 'initial') setInitialDmText(clipboardText);
+      else if (step === 'day4') setDay4Text(clipboardText);
+      else if (step === 'day8') setDay8Text(clipboardText);
+      else setDay14Text(clipboardText);
+
+      setPastedSequenceStep(step);
+      setTimeout(() => {
+        setPastedSequenceStep((prev) => (prev === step ? null : prev));
+      }, 1600);
+    } catch {
+      setSequencePasteError(getClipboardBlockedMessage());
+      focusSequenceStep(step);
+    }
   };
 
   const handleSaveSequence = () => {
@@ -1890,6 +1988,24 @@ export function LeadsSubPage({
                   </span>
                   <button
                     type="button"
+                    onClick={handlePastePromptFromClipboard}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 text-xs font-medium text-indigo-200 hover:text-white border border-indigo-500/30 flex items-center gap-1 transition cursor-pointer"
+                    title="Paste prompt directly from clipboard"
+                  >
+                    {pastedPrompt ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Pasted!</span>
+                      </>
+                    ) : (
+                      <>
+                        <ClipboardPaste className="w-3.5 h-3.5 text-indigo-300" />
+                        <span>Paste</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
                     disabled={!rawPromptText.trim()}
                     onClick={() => handleCopyPrompt(rawPromptText)}
                     className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition cursor-pointer"
@@ -1927,6 +2043,7 @@ export function LeadsSubPage({
                 onChange={(e) => {
                   setRawPromptText(e.target.value);
                   if (promptDeletedFeedback) setPromptDeletedFeedback(false);
+                  if (promptPasteError) setPromptPasteError(null);
                 }}
                 placeholder="Paste or edit the raw strategy prompt / Gemini lead analysis..."
                 className="w-full h-64 min-h-[180px] p-3.5 rounded-xl bg-slate-950/80 border border-white/10 text-xs text-slate-100 font-mono placeholder-slate-600 leading-relaxed focus:outline-none focus:border-indigo-500 resize-y overflow-y-auto [overflow-anchor:none]"
@@ -1948,6 +2065,11 @@ export function LeadsSubPage({
                 <span className="text-xs text-rose-300 font-bold font-mono flex items-center gap-1.5 animate-in fade-in">
                   <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                   <span>Prompt deleted (Button is Blue).</span>
+                </span>
+              ) : promptPasteError ? (
+                <span className="text-xs text-amber-300 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>{promptPasteError}</span>
                 </span>
               ) : (
                 <span className="text-[11px] text-slate-500">
@@ -2043,17 +2165,41 @@ export function LeadsSubPage({
 
               {/* Step 1: Initial DM (Day 0) */}
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300">
+                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300 gap-2">
                   <span className="flex items-center gap-1.5 text-indigo-300">
                     <span className="w-2 h-2 rounded-full bg-indigo-400" />
                     <span>Step 1: Initial DM (Day 0 Pitch Hook)</span>
                   </span>
-                  <span className="text-[10px] text-slate-500">Under 75 words</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 hidden sm:inline">Under 75 words</span>
+                    <button
+                      type="button"
+                      onClick={() => handlePasteSequenceStep('initial')}
+                      className="px-2 py-0.5 rounded-md bg-indigo-500/15 hover:bg-indigo-500/25 text-[11px] font-medium text-indigo-200 hover:text-white border border-indigo-500/30 flex items-center gap-1 transition cursor-pointer"
+                      title="Paste clipboard into Step 1"
+                    >
+                      {pastedSequenceStep === 'initial' ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Pasted!</span>
+                        </>
+                      ) : (
+                        <>
+                          <ClipboardPaste className="w-3 h-3 text-indigo-300" />
+                          <span>Paste</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <textarea
+                  ref={initialDmRef}
                   rows={3}
                   value={initialDmText}
-                  onChange={(e) => setInitialDmText(e.target.value)}
+                  onChange={(e) => {
+                    setInitialDmText(e.target.value);
+                    if (sequencePasteError) setSequencePasteError(null);
+                  }}
                   placeholder="Write Initial DM pitch (Day 0)..."
                   className="w-full p-3 bg-slate-950 border border-white/10 rounded-xl text-xs font-sans text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 leading-relaxed"
                 />
@@ -2061,17 +2207,41 @@ export function LeadsSubPage({
 
               {/* Step 2: Day 4 Follow-Up */}
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300">
+                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300 gap-2">
                   <span className="flex items-center gap-1.5 text-purple-300">
                     <span className="w-2 h-2 rounded-full bg-purple-400" />
                     <span>Step 2: Day 4 Follow-Up (Value Check-In)</span>
                   </span>
-                  <span className="text-[10px] text-slate-500">Kitchen Ticket PDF / Quick Win</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 hidden sm:inline">Kitchen Ticket PDF / Quick Win</span>
+                    <button
+                      type="button"
+                      onClick={() => handlePasteSequenceStep('day4')}
+                      className="px-2 py-0.5 rounded-md bg-purple-500/15 hover:bg-purple-500/25 text-[11px] font-medium text-purple-200 hover:text-white border border-purple-500/30 flex items-center gap-1 transition cursor-pointer"
+                      title="Paste clipboard into Step 2"
+                    >
+                      {pastedSequenceStep === 'day4' ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Pasted!</span>
+                        </>
+                      ) : (
+                        <>
+                          <ClipboardPaste className="w-3 h-3 text-purple-300" />
+                          <span>Paste</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <textarea
+                  ref={day4Ref}
                   rows={3}
                   value={day4Text}
-                  onChange={(e) => setDay4Text(e.target.value)}
+                  onChange={(e) => {
+                    setDay4Text(e.target.value);
+                    if (sequencePasteError) setSequencePasteError(null);
+                  }}
                   placeholder="Write Day 4 Value Check-In (e.g. kitchen ticket speed-up PDF)..."
                   className="w-full p-3 bg-slate-950 border border-white/10 rounded-xl text-xs font-sans text-slate-100 placeholder-slate-600 focus:outline-none focus:border-purple-500 leading-relaxed"
                 />
@@ -2079,17 +2249,41 @@ export function LeadsSubPage({
 
               {/* Step 3: Day 8 Follow-Up */}
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300">
+                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300 gap-2">
                   <span className="flex items-center gap-1.5 text-amber-300">
                     <span className="w-2 h-2 rounded-full bg-amber-400" />
                     <span>Step 3: Day 8 Follow-Up (Social Proof / Case Study)</span>
                   </span>
-                  <span className="text-[10px] text-slate-500">12% Takeout Surge</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 hidden sm:inline">12% Takeout Surge</span>
+                    <button
+                      type="button"
+                      onClick={() => handlePasteSequenceStep('day8')}
+                      className="px-2 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-[11px] font-medium text-amber-200 hover:text-white border border-amber-500/30 flex items-center gap-1 transition cursor-pointer"
+                      title="Paste clipboard into Step 3"
+                    >
+                      {pastedSequenceStep === 'day8' ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Pasted!</span>
+                        </>
+                      ) : (
+                        <>
+                          <ClipboardPaste className="w-3 h-3 text-amber-300" />
+                          <span>Paste</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <textarea
+                  ref={day8Ref}
                   rows={3}
                   value={day8Text}
-                  onChange={(e) => setDay8Text(e.target.value)}
+                  onChange={(e) => {
+                    setDay8Text(e.target.value);
+                    if (sequencePasteError) setSequencePasteError(null);
+                  }}
                   placeholder="Write Day 8 Social Proof reminder (e.g. 12% takeout surge case study)..."
                   className="w-full p-3 bg-slate-950 border border-white/10 rounded-xl text-xs font-sans text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500 leading-relaxed"
                 />
@@ -2097,17 +2291,41 @@ export function LeadsSubPage({
 
               {/* Step 4: Day 14 Final Breakup */}
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300">
+                <div className="flex items-center justify-between text-xs font-mono font-semibold text-slate-300 gap-2">
                   <span className="flex items-center gap-1.5 text-rose-300">
                     <span className="w-2 h-2 rounded-full bg-rose-400" />
                     <span>Step 4: Day 14 Breakup (Final Nudge / 60s Loom)</span>
                   </span>
-                  <span className="text-[10px] text-slate-500">Close File or Loom</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 hidden sm:inline">Close File or Loom</span>
+                    <button
+                      type="button"
+                      onClick={() => handlePasteSequenceStep('day14')}
+                      className="px-2 py-0.5 rounded-md bg-rose-500/15 hover:bg-rose-500/25 text-[11px] font-medium text-rose-200 hover:text-white border border-rose-500/30 flex items-center gap-1 transition cursor-pointer"
+                      title="Paste clipboard into Step 4"
+                    >
+                      {pastedSequenceStep === 'day14' ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Pasted!</span>
+                        </>
+                      ) : (
+                        <>
+                          <ClipboardPaste className="w-3 h-3 text-rose-300" />
+                          <span>Paste</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <textarea
+                  ref={day14Ref}
                   rows={3}
                   value={day14Text}
-                  onChange={(e) => setDay14Text(e.target.value)}
+                  onChange={(e) => {
+                    setDay14Text(e.target.value);
+                    if (sequencePasteError) setSequencePasteError(null);
+                  }}
                   placeholder="Write Day 14 Final Breakup (e.g. archiving video breakdown or 60s Loom audit)..."
                   className="w-full p-3 bg-slate-950 border border-white/10 rounded-xl text-xs font-sans text-slate-100 placeholder-slate-600 focus:outline-none focus:border-rose-500 leading-relaxed"
                 />
@@ -2124,6 +2342,11 @@ export function LeadsSubPage({
                       ? 'All 4 sequence messages saved to lead!'
                       : 'Sequence draft saved (fill all 4 steps to turn Green).'}
                   </span>
+                </span>
+              ) : sequencePasteError ? (
+                <span className="text-xs text-amber-300 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>{sequencePasteError}</span>
                 </span>
               ) : (
                 <span className="text-[11px] text-slate-500">
