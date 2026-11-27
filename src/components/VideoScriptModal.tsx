@@ -16,7 +16,7 @@ import {
 import { ChannelLead, MultiChannelType } from '../types';
 import { getChannelLabel, getPlatformLink } from '../utils/channelStorage';
 import { TestLinkButton } from './TestLinkButton';
-import { getLocalTodayStr } from '../utils/cadenceEngine';
+import { addCadenceDays, getLocalTodayStr } from '../utils/cadenceEngine';
 import { canMarkReelOnDate } from '../utils/growthCurve';
 import { VideoVerificationModal } from './VideoVerificationModal';
 import { recordVideoVerification } from '../utils/videoVerification';
@@ -90,19 +90,13 @@ export const VideoScriptModal: React.FC<VideoScriptModalProps> = ({
     }
     if (field === 'dmSent' && nextVal && !lead.initialSentDate) {
       const sentStr = getLocalTodayStr();
-      const [y, m, d] = sentStr.split('-').map(Number);
-      const addD = (n: number) => {
-        const dt = new Date(y, m - 1, d);
-        dt.setDate(dt.getDate() + n);
-        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-      };
       patch.initialSentDate = sentStr;
       patch.dispatchDate = sentStr;
       patch.dispatchedAt = nowIso;
       patch.status = 'dispatched';
-      patch.followup1Date = lead.followup1Date || addD(4);
-      patch.followup2Date = lead.followup2Date || addD(8);
-      patch.followup3Date = lead.followup3Date || addD(14);
+      patch.followup1Date = lead.followup1Date || addCadenceDays(sentStr, 4);
+      patch.followup2Date = lead.followup2Date || addCadenceDays(sentStr, 8);
+      patch.followup3Date = lead.followup3Date || addCadenceDays(sentStr, 14);
       patch.followupCount = lead.followupCount ?? 0;
       patch.cadenceStatus = 'running';
       patch.leadStatus = lead.isSeen ? 'seen' : 'waiting_reply';

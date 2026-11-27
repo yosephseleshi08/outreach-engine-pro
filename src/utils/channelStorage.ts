@@ -424,10 +424,32 @@ export async function hydrateChannelLeadsFromBackup(
       })
     );
 
+    let idbDateSyncNeeded = false;
+    if (idbData?.leads) {
+      for (const localLead of hydrated) {
+        const idbMatch = idbMap.get(localLead.id);
+        if (
+          idbMatch &&
+          (idbMatch.followup1Date !== localLead.followup1Date ||
+            idbMatch.followup2Date !== localLead.followup2Date ||
+            idbMatch.followup3Date !== localLead.followup3Date)
+        ) {
+          idbDateSyncNeeded = true;
+          break;
+        }
+      }
+    }
+
+    if (idbDateSyncNeeded && !changed) {
+      void saveChannelLeadsToIdb(channel, hydrated);
+      return null;
+    }
+
     if (!changed) return null;
 
     savePitchBackup(channel, hydrated);
     writeChannelLeadsToLocalStorage(channel, hydrated);
+    void saveChannelLeadsToIdb(channel, hydrated);
     return [...hydrated].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   } catch (err) {
     console.warn(`IndexedDB hydration skipped for "${channel}":`, err);

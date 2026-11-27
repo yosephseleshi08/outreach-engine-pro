@@ -21,9 +21,11 @@ import {
   addLocalDays,
   BACKSTAGE_LEADS_KEY,
   COMBINED_LEADS_KEY,
+  getCadenceDaysElapsed,
   INSTAGRAM_LEADS_KEY,
   isDateFrozenDirect,
   isLocalSunday,
+  subtractCadenceDays,
 } from './leadLifecycle';
 
 export const DAILY_OBLIGATIONS_STORAGE_KEY = 'ridge_daily_obligations';
@@ -148,14 +150,7 @@ function isWarmedBeforeDate(lead: ChannelLead, dateStr: string): boolean {
 }
 
 function getDaysElapsedLocal(fromDateStr: string, toDateStr: string): number {
-  const f = toLocalDateString(fromDateStr);
-  const t = toLocalDateString(toDateStr);
-  if (!f || !t) return 0;
-  const [y1, m1, d1] = f.split('-').map(Number);
-  const [y2, m2, d2] = t.split('-').map(Number);
-  const t1 = new Date(y1, m1 - 1, d1).getTime();
-  const t2 = new Date(y2, m2 - 1, d2).getTime();
-  return Math.max(0, Math.round((t2 - t1) / (1000 * 60 * 60 * 24)));
+  return getCadenceDaysElapsed(fromDateStr, toDateStr);
 }
 
 function resolveEffectiveInitialDate(lead: ChannelLead): string | null {
@@ -205,12 +200,12 @@ function resolveEffectiveInitialDate(lead: ChannelLead): string | null {
     return (
       normDmSentAt ||
       normFirstContact ||
-      (f1Sent ? addLocalDays(f1Sent, -4) : null) ||
-      (f2Sent ? addLocalDays(f2Sent, -8) : null) ||
-      (f3Sent ? addLocalDays(f3Sent, -14) : null) ||
-      (normF1Date ? addLocalDays(normF1Date, -4) : null) ||
-      (normF2Date ? addLocalDays(normF2Date, -8) : null) ||
-      (normF3Date ? addLocalDays(normF3Date, -14) : null) ||
+      (f1Sent ? subtractCadenceDays(f1Sent, 4) : null) ||
+      (f2Sent ? subtractCadenceDays(f2Sent, 8) : null) ||
+      (f3Sent ? subtractCadenceDays(f3Sent, 14) : null) ||
+      (normF1Date ? subtractCadenceDays(normF1Date, 4) : null) ||
+      (normF2Date ? subtractCadenceDays(normF2Date, 8) : null) ||
+      (normF3Date ? subtractCadenceDays(normF3Date, 14) : null) ||
       normDispatchDate ||
       normDispatchedAt ||
       normLastContact ||
@@ -223,9 +218,9 @@ function resolveEffectiveInitialDate(lead: ChannelLead): string | null {
     normDispatchedAt ||
     normLastContact ||
     normFirstContact ||
-    (normF1Date ? addLocalDays(normF1Date, -4) : null) ||
-    (normF2Date ? addLocalDays(normF2Date, -8) : null) ||
-    (normF3Date ? addLocalDays(normF3Date, -14) : null) ||
+    (normF1Date ? subtractCadenceDays(normF1Date, 4) : null) ||
+    (normF2Date ? subtractCadenceDays(normF2Date, 8) : null) ||
+    (normF3Date ? subtractCadenceDays(normF3Date, 14) : null) ||
     null
   );
 }

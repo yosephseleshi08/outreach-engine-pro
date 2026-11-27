@@ -141,6 +141,7 @@ export default function App() {
   const handleToggleFreeze = () => {
     const updated = togglePipelineFreeze();
     setIsFrozen(updated.isFrozen);
+    runDiagnosticDataRepair(true);
   };
 
   const handleUpdateCombinedLeads = (updated: ChannelLead[]) => {

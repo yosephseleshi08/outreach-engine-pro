@@ -231,12 +231,34 @@ function isFrozenOrSundayDate(dateStr: string): boolean {
   return false;
 }
 
-function shiftOffRestDay(dateStr: string): string {
-  let cursor = normDateStr(dateStr) || dateStr;
+function addCadenceDaysLocal(startDateStr: string, cadenceDays: number): string {
+  let cursor = normDateStr(startDateStr) || startDateStr;
+  if (cadenceDays <= 0) return cursor;
+  let remaining = cadenceDays;
   let guard = 0;
-  while (isFrozenOrSundayDate(cursor) && guard < 31) {
+  while (remaining > 0 && guard < 365) {
     cursor = addLocalCalendarDays(cursor, 1);
     guard++;
+    if (isFrozenOrSundayDate(cursor)) {
+      continue;
+    }
+    remaining--;
+  }
+  return cursor;
+}
+
+function subtractCadenceDaysLocal(targetDateStr: string, cadenceDays: number): string {
+  let cursor = normDateStr(targetDateStr) || targetDateStr;
+  if (cadenceDays <= 0) return cursor;
+  let remaining = cadenceDays;
+  let guard = 0;
+  while (remaining > 0 && guard < 365) {
+    cursor = addLocalCalendarDays(cursor, -1);
+    guard++;
+    if (isFrozenOrSundayDate(cursor)) {
+      continue;
+    }
+    remaining--;
   }
   return cursor;
 }
@@ -405,12 +427,12 @@ export function normalizeExistingLeadCadence<T extends Partial<ChannelLead> & Re
       (fuCount > 0
         ? normDmSentAt ||
           normFirstContact ||
-          (normF1Sent ? addLocalCalendarDays(normF1Sent, -4) : undefined) ||
-          (normF2Sent ? addLocalCalendarDays(normF2Sent, -8) : undefined) ||
-          (normF3Sent ? addLocalCalendarDays(normF3Sent, -14) : undefined) ||
-          (normF1Date ? addLocalCalendarDays(normF1Date, -4) : undefined) ||
-          (normF2Date ? addLocalCalendarDays(normF2Date, -8) : undefined) ||
-          (normF3Date ? addLocalCalendarDays(normF3Date, -14) : undefined) ||
+          (normF1Sent ? subtractCadenceDaysLocal(normF1Sent, 4) : undefined) ||
+          (normF2Sent ? subtractCadenceDaysLocal(normF2Sent, 8) : undefined) ||
+          (normF3Sent ? subtractCadenceDaysLocal(normF3Sent, 14) : undefined) ||
+          (normF1Date ? subtractCadenceDaysLocal(normF1Date, 4) : undefined) ||
+          (normF2Date ? subtractCadenceDaysLocal(normF2Date, 8) : undefined) ||
+          (normF3Date ? subtractCadenceDaysLocal(normF3Date, 14) : undefined) ||
           normDispatchDate ||
           normDispatchedAt ||
           normLastContact
@@ -419,9 +441,9 @@ export function normalizeExistingLeadCadence<T extends Partial<ChannelLead> & Re
           normDispatchedAt ||
           normLastContact ||
           normFirstContact ||
-          (normF1Date ? addLocalCalendarDays(normF1Date, -4) : undefined) ||
-          (normF2Date ? addLocalCalendarDays(normF2Date, -8) : undefined) ||
-          (normF3Date ? addLocalCalendarDays(normF3Date, -14) : undefined));
+          (normF1Date ? subtractCadenceDaysLocal(normF1Date, 4) : undefined) ||
+          (normF2Date ? subtractCadenceDaysLocal(normF2Date, 8) : undefined) ||
+          (normF3Date ? subtractCadenceDaysLocal(normF3Date, 14) : undefined));
 
     if (inferredInitial) {
       if (next.initialSentDate !== inferredInitial) {
@@ -429,9 +451,9 @@ export function normalizeExistingLeadCadence<T extends Partial<ChannelLead> & Re
         changed = true;
       }
 
-      const expectedFu1 = shiftOffRestDay(addLocalCalendarDays(inferredInitial, 4));
-      const expectedFu2 = shiftOffRestDay(addLocalCalendarDays(inferredInitial, 8));
-      const expectedFu3 = shiftOffRestDay(addLocalCalendarDays(inferredInitial, 14));
+      const expectedFu1 = addCadenceDaysLocal(inferredInitial, 4);
+      const expectedFu2 = addCadenceDaysLocal(inferredInitial, 8);
+      const expectedFu3 = addCadenceDaysLocal(inferredInitial, 14);
 
       if (next.followup1Date !== expectedFu1) {
         next.followup1Date = expectedFu1;

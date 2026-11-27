@@ -62,6 +62,16 @@ export function isDateFrozenDirect(dateStr: string): boolean {
   return false;
 }
 
+export function isCadenceRestDay(
+  dateStr: string,
+  customFrozenCheck?: (d: string) => boolean
+): boolean {
+  const norm = toLocalDateString(dateStr);
+  if (!norm) return false;
+  if (isLocalSunday(norm)) return true;
+  return customFrozenCheck ? customFrozenCheck(norm) : isDateFrozenDirect(norm);
+}
+
 /**
  * Shifts any due date landing on a Sunday (Rest Day) or frozen date forward
  * to the next active working calendar day using local calendar math.
@@ -71,13 +81,93 @@ export function shiftDueDateOffRestDay(
   customFrozenCheck?: (d: string) => boolean
 ): string {
   let cursor = toLocalDateString(dateStr) || getLocalTodayDateString();
-  const isFrozen = customFrozenCheck || isDateFrozenDirect;
   let guard = 0;
-  while ((isLocalSunday(cursor) || isFrozen(cursor)) && guard < 31) {
+  while (isCadenceRestDay(cursor, customFrozenCheck) && guard < 31) {
     cursor = addLocalDays(cursor, 1);
     guard++;
   }
   return cursor;
+}
+
+/**
+ * Advances `cadenceDays` active working days from `startDateStr`,
+ * completely skipping Sundays (Rest Days) and any recorded Freeze Days.
+ * Example (Day 0 = Wed Nov 11):
+ * - Day 4  -> Mon Nov 16 (skips Sun Nov 15)
+ * - Day 8  -> Fri Nov 20 (4 active days from Nov 16)
+ * - Day 14 -> Fri Nov 27 (skips Sun Nov 22)
+ */
+export function addCadenceDays(
+  startDateStr: string,
+  cadenceDays: number,
+  customFrozenCheck?: (d: string) => boolean
+): string {
+  let cursor = toLocalDateString(startDateStr) || getLocalTodayDateString();
+  if (cadenceDays <= 0) return cursor;
+
+  let remaining = cadenceDays;
+  let guard = 0;
+  while (remaining > 0 && guard < 365) {
+    cursor = addLocalDays(cursor, 1);
+    guard++;
+    if (isCadenceRestDay(cursor, customFrozenCheck)) {
+      continue;
+    }
+    remaining--;
+  }
+  return cursor;
+}
+
+/**
+ * Walks backwards `cadenceDays` active working days from `targetDateStr`,
+ * skipping Sundays and Freeze Days (inverse of addCadenceDays).
+ */
+export function subtractCadenceDays(
+  targetDateStr: string,
+  cadenceDays: number,
+  customFrozenCheck?: (d: string) => boolean
+): string {
+  let cursor = toLocalDateString(targetDateStr) || getLocalTodayDateString();
+  if (cadenceDays <= 0) return cursor;
+
+  let remaining = cadenceDays;
+  let guard = 0;
+  while (remaining > 0 && guard < 365) {
+    cursor = addLocalDays(cursor, -1);
+    guard++;
+    if (isCadenceRestDay(cursor, customFrozenCheck)) {
+      continue;
+    }
+    remaining--;
+  }
+  return cursor;
+}
+
+/**
+ * Counts the number of active (non-Sunday, non-frozen) cadence days elapsed
+ * strictly after `fromDateStr` up to and including `toDateStr`.
+ */
+export function getCadenceDaysElapsed(
+  fromDateStr: string,
+  toDateStr: string,
+  customFrozenCheck?: (d: string) => boolean
+): number {
+  const normFrom = toLocalDateString(fromDateStr);
+  const normTo = toLocalDateString(toDateStr);
+  if (!normFrom || !normTo || normTo <= normFrom) return 0;
+
+  let count = 0;
+  let cursor = normFrom;
+  let guard = 0;
+  while (cursor < normTo && guard < 1000) {
+    cursor = addLocalDays(cursor, 1);
+    guard++;
+    if (isCadenceRestDay(cursor, customFrozenCheck)) {
+      continue;
+    }
+    count++;
+  }
+  return count;
 }
 
 export function hasLeadSentHistory(lead: Partial<ChannelLead>): boolean {
@@ -476,8 +566,8 @@ export function getOrphanedCadences(
       toLocalDateString(lead.initialSentDate) ||
       (fuCount > 0
         ? toLocalDateString(lead.dmSentAt) ||
-          (lead.followup1SentDate ? addLocalDays(lead.followup1SentDate, -4) : null) ||
-          (lead.followup2SentDate ? addLocalDays(lead.followup2SentDate, -8) : null) ||
+          (lead.followup1SentDate ? subtractCadenceDays(lead.followup1SentDate, 4) : null) ||
+          (lead.followup2SentDate ? subtractCadenceDays(lead.followup2SentDate, 8) : null) ||
           toLocalDateString(lead.dispatchDate) ||
           toLocalDateString(lead.dispatchedAt)
         : toLocalDateString(lead.dispatchDate) ||
@@ -485,22 +575,20 @@ export function getOrphanedCadences(
           toLocalDateString(lead.dispatchedAt)) ||
       today;
 
-    const [iy, im, id] = effectiveInitial.split('-').map(Number);
-    const initialMs = new Date(iy, im - 1, id).getTime();
-    const daysElapsed = Math.max(0, Math.round((todayMs - initialMs) / (1000 * 60 * 60 * 24)));
+    const daysElapsed = getCadenceDaysElapsed(effectiveInitial, today);
 
     let dueStep: 'D4' | 'D8' | 'D14' | null = null;
     let rawDue: string | undefined;
 
     if ((daysElapsed >= 14 && fuCount <= 2) || fuCount === 2) {
       dueStep = 'D14';
-      rawDue = lead.followup3Date || addLocalDays(effectiveInitial, 14);
+      rawDue = lead.followup3Date || addCadenceDays(effectiveInitial, 14);
     } else if ((daysElapsed >= 8 && fuCount <= 1) || fuCount === 1) {
       dueStep = 'D8';
-      rawDue = lead.followup2Date || addLocalDays(effectiveInitial, 8);
+      rawDue = lead.followup2Date || addCadenceDays(effectiveInitial, 8);
     } else {
       dueStep = 'D4';
-      rawDue = lead.followup1Date || addLocalDays(effectiveInitial, 4);
+      rawDue = lead.followup1Date || addCadenceDays(effectiveInitial, 4);
     }
 
     if (!dueStep || !rawDue) continue;
