@@ -15,6 +15,7 @@ import {
 import {
   loadChannelLeads,
   saveChannelLeads,
+  hydrateChannelLeadsFromBackup,
 } from './utils/channelStorage';
 import { loadInboxLeads } from './utils/inboxStorage';
 import { loadBackstageLeads } from './utils/backstageStorage';
@@ -63,12 +64,40 @@ export default function App() {
   );
 
   const isInternalSaveRef = React.useRef(false);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+
+  // Hydrate any missing sequences or offloaded evidence images from IndexedDB backup on startup
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [hydratedCombined, hydratedIg] = await Promise.all([
+        hydrateChannelLeadsFromBackup('combined'),
+        hydrateChannelLeadsFromBackup('instagram'),
+      ]);
+      if (cancelled) return;
+      if (hydratedCombined) {
+        setCombinedLeads(hydratedCombined);
+      }
+      if (hydratedIg) {
+        setInstagramLeads(hydratedIg);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Listen for pipeline freeze, inbox, backstage, channel storage, and diagnostic data repair changes across components
   React.useEffect(() => {
     const handleFreeze = () => setIsFrozen(isPipelineFrozenNow());
     const handleInbox = () => setInboxCount(loadInboxLeads().length);
     const handleBackstage = () => setBackstageLeads(loadBackstageLeads());
+    const handleStorageError = (e: Event) => {
+      const customEvent = e as CustomEvent<{ message?: string }>;
+      if (customEvent.detail?.message) {
+        setStorageWarning(customEvent.detail.message);
+      }
+    };
     const handleChannelLeadsChanged = (e: Event) => {
       if (isInternalSaveRef.current) return;
       const customEvent = e as CustomEvent<{ channel?: MultiChannelType; leads?: ChannelLead[] }>;
@@ -89,6 +118,7 @@ export default function App() {
     window.addEventListener('inbox_leads_changed', handleInbox);
     window.addEventListener('backstage_leads_changed', handleBackstage);
     window.addEventListener('channel_leads_changed', handleChannelLeadsChanged);
+    window.addEventListener('crm_storage_error', handleStorageError);
     window.addEventListener('crm_data_repaired', handleRepaired);
     window.addEventListener('storage', handleFreeze);
     window.addEventListener('storage', handleInbox);
@@ -99,6 +129,7 @@ export default function App() {
       window.removeEventListener('inbox_leads_changed', handleInbox);
       window.removeEventListener('backstage_leads_changed', handleBackstage);
       window.removeEventListener('channel_leads_changed', handleChannelLeadsChanged);
+      window.removeEventListener('crm_storage_error', handleStorageError);
       window.removeEventListener('crm_data_repaired', handleRepaired);
       window.removeEventListener('storage', handleFreeze);
       window.removeEventListener('storage', handleInbox);
@@ -169,6 +200,18 @@ export default function App() {
       <OfflineIndicator />
 
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+        {storageWarning && (
+          <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/35 text-rose-200 text-xs flex items-center justify-between gap-3">
+            <span>{storageWarning}</span>
+            <button
+              type="button"
+              onClick={() => setStorageWarning(null)}
+              className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold transition cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {/* Global Top Navigation (Combined Outreach, Instagram, Inbox, Today, Dashboard, Insights, History) */}
         <Header
           activeTab={activeNavTab}

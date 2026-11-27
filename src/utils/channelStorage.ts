@@ -1,10 +1,214 @@
-import { ChannelLead, MultiChannelType } from '../types';
+import { ChannelLead, EvidenceImage, MultiChannelType } from '../types';
 import { extractCleanEmail, normalizeExistingLeadCadence, normDateStr } from './dataRepair';
 import { getStrictVoiceTypeForId, ensureVoiceTypeAssignments } from './voiceTypeEngine';
 import { extractInstagramHandle } from './leadLifecycle';
 import { getLocalTodayStr, normalizeToLocalDateStr, toCleanDateStr } from './cadenceEngine';
+import {
+  saveChannelLeadsToIdb,
+  loadChannelLeadsFromIdb,
+  saveMockupImage,
+  getMockupImage,
+} from './indexedDbVault';
 
 const STORAGE_PREFIX = 'outreach_channel_leads_';
+const PITCH_BACKUP_PREFIX = 'outreach_pitch_backup_';
+
+interface PitchBackupEntry {
+  id: string;
+  name?: string;
+  prompt?: string;
+  leadAnalysis?: string;
+  analysisSavedAt?: string;
+  initialDM?: string;
+  customPitch?: string;
+  stagedDmMiniPitch?: string;
+  followupDM_Day4?: string;
+  followupDM_Day7?: string;
+  followup3DM?: string;
+  followupDM_Day8?: string;
+  followupDM_Day14?: string;
+  followup7DM?: string;
+  breakupDM_Day14?: string;
+  breakupDM_Day30?: string;
+  pitchSavedAt?: string;
+  isSequenceConfigured?: boolean;
+}
+
+function hasAnySequenceText(lead: Partial<ChannelLead> | PitchBackupEntry): boolean {
+  return Boolean(
+    lead.initialDM?.trim() ||
+      lead.followupDM_Day4?.trim() ||
+      lead.followupDM_Day7?.trim() ||
+      lead.followup3DM?.trim() ||
+      lead.followupDM_Day8?.trim() ||
+      lead.followupDM_Day14?.trim() ||
+      lead.followup7DM?.trim() ||
+      lead.breakupDM_Day14?.trim() ||
+      lead.breakupDM_Day30?.trim() ||
+      (lead.customPitch?.trim() && lead.customPitch.trim() !== lead.prompt?.trim())
+  );
+}
+
+function savePitchBackup(channel: MultiChannelType, leads: ChannelLead[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const backupMap: Record<string, PitchBackupEntry> = {};
+    for (const l of leads) {
+      if (
+        hasAnySequenceText(l) ||
+        l.prompt?.trim() ||
+        l.leadAnalysis?.trim() ||
+        l.pitchSavedAt ||
+        l.isSequenceConfigured
+      ) {
+        backupMap[l.id] = {
+          id: l.id,
+          name: l.name,
+          prompt: l.prompt,
+          leadAnalysis: l.leadAnalysis,
+          analysisSavedAt: l.analysisSavedAt,
+          initialDM: l.initialDM,
+          customPitch: l.customPitch,
+          stagedDmMiniPitch: l.stagedDmMiniPitch,
+          followupDM_Day4: l.followupDM_Day4,
+          followupDM_Day7: l.followupDM_Day7,
+          followup3DM: l.followup3DM,
+          followupDM_Day8: l.followupDM_Day8,
+          followupDM_Day14: l.followupDM_Day14,
+          followup7DM: l.followup7DM,
+          breakupDM_Day14: l.breakupDM_Day14,
+          breakupDM_Day30: l.breakupDM_Day30,
+          pitchSavedAt: l.pitchSavedAt,
+          isSequenceConfigured: l.isSequenceConfigured,
+        };
+      }
+    }
+    localStorage.setItem(`${PITCH_BACKUP_PREFIX}${channel}`, JSON.stringify(backupMap));
+  } catch (err) {
+    console.warn(`Failed saving lightweight pitch backup for "${channel}":`, err);
+  }
+}
+
+function restoreMissingPitchesFromBackup(
+  channel: MultiChannelType,
+  leads: ChannelLead[]
+): { restoredLeads: ChannelLead[]; wasRestored: boolean } {
+  try {
+    if (typeof localStorage === 'undefined') return { restoredLeads: leads, wasRestored: false };
+    const rawBackup = localStorage.getItem(`${PITCH_BACKUP_PREFIX}${channel}`);
+    if (!rawBackup) return { restoredLeads: leads, wasRestored: false };
+    const backupMap = JSON.parse(rawBackup) as Record<string, PitchBackupEntry>;
+    if (!backupMap || typeof backupMap !== 'object') {
+      return { restoredLeads: leads, wasRestored: false };
+    }
+
+    let wasRestored = false;
+    const restoredLeads = leads.map((lead) => {
+      const backup = backupMap[lead.id];
+      if (!backup) return lead;
+
+      const leadHasSeq = hasAnySequenceText(lead);
+      const backupHasSeq = hasAnySequenceText(backup);
+
+      // Only restore if the lead's main record is missing saved sequence text while backup has saved sequence text,
+      // OR if backup's pitchSavedAt is strictly newer than the lead's main record.
+      const backupIsNewer =
+        Boolean(backup.pitchSavedAt) &&
+        (!lead.pitchSavedAt || backup.pitchSavedAt! > lead.pitchSavedAt);
+
+      if ((!leadHasSeq && backupHasSeq) || (backupHasSeq && backupIsNewer)) {
+        wasRestored = true;
+        return {
+          ...lead,
+          ...(backup.prompt && !lead.prompt ? { prompt: backup.prompt } : {}),
+          ...(backup.leadAnalysis && !lead.leadAnalysis ? { leadAnalysis: backup.leadAnalysis } : {}),
+          initialDM: backup.initialDM || lead.initialDM,
+          customPitch: backup.customPitch || lead.customPitch,
+          stagedDmMiniPitch: backup.stagedDmMiniPitch || lead.stagedDmMiniPitch,
+          followupDM_Day4: backup.followupDM_Day4 || lead.followupDM_Day4,
+          followupDM_Day7: backup.followupDM_Day7 || lead.followupDM_Day7,
+          followup3DM: backup.followup3DM || lead.followup3DM,
+          followupDM_Day8: backup.followupDM_Day8 || lead.followupDM_Day8,
+          followupDM_Day14: backup.followupDM_Day14 || lead.followupDM_Day14,
+          followup7DM: backup.followup7DM || lead.followup7DM,
+          breakupDM_Day14: backup.breakupDM_Day14 || lead.breakupDM_Day14,
+          breakupDM_Day30: backup.breakupDM_Day30 || lead.breakupDM_Day30,
+          pitchSavedAt: backup.pitchSavedAt || lead.pitchSavedAt,
+          isSequenceConfigured: backup.isSequenceConfigured ?? lead.isSequenceConfigured,
+        };
+      }
+
+      return lead;
+    });
+
+    return { restoredLeads, wasRestored };
+  } catch {
+    return { restoredLeads: leads, wasRestored: false };
+  }
+}
+
+function getEvidenceOffloadKey(channel: MultiChannelType, leadId: string, imageId: string): string {
+  return `ev_offload_${channel}_${leadId}_${imageId}`;
+}
+
+function buildQuotaSafeLocalLeads(
+  channel: MultiChannelType,
+  leads: ChannelLead[]
+): ChannelLead[] {
+  return leads.map((lead) => {
+    let nextLead = lead;
+
+    if (Array.isArray(lead.evidenceImages) && lead.evidenceImages.length > 0) {
+      const strippedImages: EvidenceImage[] = lead.evidenceImages.map((img) => {
+        if (img.dataUrl && img.dataUrl.length > 2048) {
+          void saveMockupImage(getEvidenceOffloadKey(channel, lead.id, img.id), img.dataUrl);
+          return {
+            ...img,
+            dataUrl: '',
+          };
+        }
+        return img;
+      });
+      nextLead = {
+        ...nextLead,
+        evidenceImages: strippedImages,
+      };
+    }
+
+    if (nextLead.mockupHtmlContent && nextLead.mockupHtmlContent.length > 2048) {
+      nextLead = {
+        ...nextLead,
+        mockupHtmlContent: undefined,
+      };
+    }
+
+    return nextLead;
+  });
+}
+
+function writeChannelLeadsToLocalStorage(
+  channel: MultiChannelType,
+  activeOnly: ChannelLead[]
+): { ok: boolean; error?: string } {
+  const storageKey = `${STORAGE_PREFIX}${channel}`;
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(activeOnly));
+    return { ok: true };
+  } catch (primaryErr) {
+    // QuotaExceededError fallback: offload heavy inline screenshots to IndexedDB so text pitches still save
+    try {
+      const lightweightLeads = buildQuotaSafeLocalLeads(channel, activeOnly);
+      localStorage.setItem(storageKey, JSON.stringify(lightweightLeads));
+      return { ok: true };
+    } catch (fallbackErr) {
+      console.error(`Failed to persist leads to localStorage for "${channel}":`, primaryErr, fallbackErr);
+      return {
+        ok: false,
+        error: 'Browser localStorage is full or blocked. Changes were mirrored to IndexedDB backup, please export a backup.',
+      };
+    }
+  }
+}
 
 export function getChannelPrefix(channel: MultiChannelType): string {
   switch (channel) {
@@ -86,7 +290,8 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
           })),
         ]).map((l) => normalizeLeadDatesOnLoad(normalizeExistingLeadCadence(l).normalizedLead));
         const { updatedLeads: merged } = ensureVoiceTypeAssignments(mergedRaw, channel);
-        localStorage.setItem(storageKey, JSON.stringify(merged));
+        writeChannelLeadsToLocalStorage(channel, merged);
+        savePitchBackup(channel, merged);
         return [...merged].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       }
     }
@@ -95,8 +300,11 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const activeOnly = parsed.filter((l: ChannelLead) => !l?.isArchived);
+        const { restoredLeads: pitchRestored, wasRestored: pitchWasRestored } =
+          restoreMissingPitchesFromBackup(channel, activeOnly);
+
         let cadenceChanged = false;
-        const cadenceMigrated = activeOnly.map((l: ChannelLead) => {
+        const cadenceMigrated = pitchRestored.map((l: ChannelLead) => {
           const { normalizedLead, wasChanged } = normalizeExistingLeadCadence(l);
           const cleanDated = normalizeLeadDatesOnLoad(normalizedLead);
           if (wasChanged || cleanDated !== normalizedLead) cadenceChanged = true;
@@ -105,8 +313,14 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
         const normalized = normalizeEmailOnlyWarmupStatus(cadenceMigrated);
         const { updatedLeads: voiceNormalized, hasChanges: voiceChanged } =
           ensureVoiceTypeAssignments(normalized, channel);
-        if (cadenceChanged || voiceChanged || normalized !== cadenceMigrated || activeOnly.length !== parsed.length) {
-          localStorage.setItem(storageKey, JSON.stringify(voiceNormalized));
+        if (
+          pitchWasRestored ||
+          cadenceChanged ||
+          voiceChanged ||
+          normalized !== cadenceMigrated ||
+          activeOnly.length !== parsed.length
+        ) {
+          writeChannelLeadsToLocalStorage(channel, voiceNormalized);
         }
         // Sort by sortOrder ascending
         return [...voiceNormalized].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -119,15 +333,134 @@ export function loadChannelLeads(channel: MultiChannelType): ChannelLead[] {
 }
 
 /**
- * Saves leads for a specific channel to localStorage (excluding any archived leads)
- * and notifies listeners immediately so active views re-render without refresh.
+ * Hydrates leads asynchronously from IndexedDB backup if:
+ * 1. localStorage lost leads completely while IndexedDB has a saved copy,
+ * 2. IndexedDB has newer saved 4-step sequences (`pitchSavedAt`) missing from localStorage,
+ * 3. Any evidenceImages were offloaded to IndexedDB due to localStorage quota limits.
+ */
+export async function hydrateChannelLeadsFromBackup(
+  channel: MultiChannelType
+): Promise<ChannelLead[] | null> {
+  try {
+    const idbData = await loadChannelLeadsFromIdb<ChannelLead>(channel);
+    const localLeads = loadChannelLeads(channel);
+
+    if (localLeads.length === 0 && idbData && idbData.leads.length > 0) {
+      const restored = idbData.leads.map((l) =>
+        normalizeLeadDatesOnLoad(normalizeExistingLeadCadence(l).normalizedLead)
+      );
+      writeChannelLeadsToLocalStorage(channel, restored);
+      savePitchBackup(channel, restored);
+      return [...restored].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    }
+
+    if (localLeads.length === 0) return null;
+
+    const idbMap = new Map<string, ChannelLead>();
+    if (idbData?.leads) {
+      for (const item of idbData.leads) {
+        if (item?.id) idbMap.set(item.id, item);
+      }
+    }
+
+    let changed = false;
+    const hydrated = await Promise.all(
+      localLeads.map(async (lead) => {
+        let nextLead = lead;
+        const idbLead = idbMap.get(lead.id);
+
+        // Restore missing/newer saved sequence messages from IndexedDB backup non-destructively
+        if (idbLead && hasAnySequenceText(idbLead)) {
+          const localHasSeq = hasAnySequenceText(lead);
+          const idbIsNewer =
+            Boolean(idbLead.pitchSavedAt) &&
+            (!lead.pitchSavedAt || idbLead.pitchSavedAt! > lead.pitchSavedAt);
+
+          if ((!localHasSeq && Boolean(idbLead.pitchSavedAt)) || idbIsNewer) {
+            nextLead = {
+              ...nextLead,
+              ...(idbLead.prompt && !nextLead.prompt ? { prompt: idbLead.prompt } : {}),
+              ...(idbLead.leadAnalysis && !nextLead.leadAnalysis ? { leadAnalysis: idbLead.leadAnalysis } : {}),
+              initialDM: idbLead.initialDM || nextLead.initialDM,
+              customPitch: idbLead.customPitch || nextLead.customPitch,
+              stagedDmMiniPitch: idbLead.stagedDmMiniPitch || nextLead.stagedDmMiniPitch,
+              followupDM_Day4: idbLead.followupDM_Day4 || nextLead.followupDM_Day4,
+              followupDM_Day7: idbLead.followupDM_Day7 || nextLead.followupDM_Day7,
+              followup3DM: idbLead.followup3DM || nextLead.followup3DM,
+              followupDM_Day8: idbLead.followupDM_Day8 || nextLead.followupDM_Day8,
+              followupDM_Day14: idbLead.followupDM_Day14 || nextLead.followupDM_Day14,
+              followup7DM: idbLead.followup7DM || nextLead.followup7DM,
+              breakupDM_Day14: idbLead.breakupDM_Day14 || nextLead.breakupDM_Day14,
+              breakupDM_Day30: idbLead.breakupDM_Day30 || nextLead.breakupDM_Day30,
+              pitchSavedAt: idbLead.pitchSavedAt || nextLead.pitchSavedAt,
+              isSequenceConfigured: idbLead.isSequenceConfigured ?? nextLead.isSequenceConfigured,
+            };
+            changed = true;
+          }
+        }
+
+        // Hydrate any offloaded evidenceImages
+        if (Array.isArray(nextLead.evidenceImages) && nextLead.evidenceImages.some((img) => !img.dataUrl)) {
+          const restoredImages = await Promise.all(
+            nextLead.evidenceImages.map(async (img) => {
+              if (img.dataUrl) return img;
+              const fromIdbLead = idbLead?.evidenceImages?.find((x) => x.id === img.id && x.dataUrl)?.dataUrl;
+              if (fromIdbLead) {
+                changed = true;
+                return { ...img, dataUrl: fromIdbLead };
+              }
+              const fromMediaVault = await getMockupImage(getEvidenceOffloadKey(channel, nextLead.id, img.id));
+              if (fromMediaVault) {
+                changed = true;
+                return { ...img, dataUrl: fromMediaVault };
+              }
+              return img;
+            })
+          );
+          nextLead = { ...nextLead, evidenceImages: restoredImages };
+        }
+
+        return nextLead;
+      })
+    );
+
+    if (!changed) return null;
+
+    savePitchBackup(channel, hydrated);
+    writeChannelLeadsToLocalStorage(channel, hydrated);
+    return [...hydrated].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  } catch (err) {
+    console.warn(`IndexedDB hydration skipped for "${channel}":`, err);
+    return null;
+  }
+}
+
+/**
+ * Saves leads for a specific channel to localStorage (with quota-safe image offload),
+ * lightweight pitch backup, and IndexedDB full mirror, then notifies listeners.
  */
 export function saveChannelLeads(channel: MultiChannelType, leads: ChannelLead[]): void {
   try {
     const activeOnly = leads
       .filter((l) => !l.isArchived)
       .map((l) => normalizeLeadDatesOnLoad(l));
-    localStorage.setItem(`${STORAGE_PREFIX}${channel}`, JSON.stringify(activeOnly));
+
+    // 1. Always write compact text-only pitch/sequence backup first
+    savePitchBackup(channel, activeOnly);
+
+    // 2. Always mirror full leads (including images) into IndexedDB
+    void saveChannelLeadsToIdb(channel, activeOnly);
+
+    // 3. Persist to localStorage (with automatic image offload if quota is exceeded)
+    const writeRes = writeChannelLeadsToLocalStorage(channel, activeOnly);
+    if (!writeRes.ok && typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('crm_storage_error', {
+          detail: { channel, message: writeRes.error },
+        })
+      );
+    }
+
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
         new CustomEvent('channel_leads_changed', {
@@ -969,19 +1302,159 @@ export function validateChannelLink(
 }
 
 
+interface SequenceStepExport {
+  label: string;
+  message: string;
+  sent: boolean;
+  sentDate?: string | null;
+}
+
+function formatMarkdownBlockquote(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map((line) => (line.trim().length > 0 ? `> ${line}` : '>'))
+    .join('\n');
+}
+
 /**
- * Exports channel leads as CSV or JSON format.
+ * Generates a Markdown document for channel leads with each lead's Prompt first,
+ * followed by the 4-Step Multi-Channel Sequence with sent marks on each step.
+ */
+export function generateChannelMarkdown(
+  channel: MultiChannelType,
+  leads: ChannelLead[]
+): string {
+  const channelName = getChannelLabel(channel);
+  const exportDate = getLocalTodayStr();
+
+  const orderedLeads = [...leads].sort((a, b) => {
+    const diff = (a.numericId || 0) - (b.numericId || 0);
+    if (diff !== 0) return diff;
+    return (a.sortOrder || 0) - (b.sortOrder || 0);
+  });
+
+  const sections: string[] = [
+    `# ${channelName} — Leads & 4-Step Sequence Export`,
+    `Exported: ${exportDate} · Total Leads: ${orderedLeads.length}`,
+  ];
+
+  for (const lead of orderedLeads) {
+    const promptText = (
+      lead.prompt ||
+      lead.leadAnalysis ||
+      (lead.customPitch && lead.customPitch !== lead.initialDM ? lead.customPitch : '') ||
+      ''
+    ).trim();
+
+    const followupCount = typeof lead.followupCount === 'number' ? lead.followupCount : 0;
+
+    const step1Sent = Boolean(
+      lead.initialSentDate ||
+        lead.dmSent ||
+        lead.dmSentAt ||
+        lead.followup1SentDate ||
+        lead.followup2SentDate ||
+        lead.followup3SentDate ||
+        followupCount >= 1
+    );
+    const step2Sent = Boolean(
+      lead.followup1SentDate ||
+        lead.followup2SentDate ||
+        lead.followup3SentDate ||
+        followupCount >= 1
+    );
+    const step3Sent = Boolean(
+      lead.followup2SentDate || lead.followup3SentDate || followupCount >= 2
+    );
+    const step4Sent = Boolean(lead.followup3SentDate || followupCount >= 3);
+
+    const steps: SequenceStepExport[] = [
+      {
+        label: 'Step 1: Initial DM (Day 0 Pitch Hook)',
+        message: (lead.initialDM || lead.customPitch || lead.stagedDmMiniPitch || '').trim(),
+        sent: step1Sent,
+        sentDate: toCleanDateStr(lead.initialSentDate) || toCleanDateStr(lead.dmSentAt),
+      },
+      {
+        label: 'Step 2: Day 4 Follow-Up (Value Check-In)',
+        message: (lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '').trim(),
+        sent: step2Sent,
+        sentDate: toCleanDateStr(lead.followup1SentDate),
+      },
+      {
+        label: 'Step 3: Day 8 Follow-Up (Social Proof / Case Study)',
+        message: (lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '').trim(),
+        sent: step3Sent,
+        sentDate: toCleanDateStr(lead.followup2SentDate),
+      },
+      {
+        label: 'Step 4: Day 14 Breakup (Final Nudge / 60s Loom)',
+        message: (lead.breakupDM_Day14 || lead.breakupDM_Day30 || '').trim(),
+        sent: step4Sent,
+        sentDate: toCleanDateStr(lead.followup3SentDate),
+      },
+    ];
+
+    const metaParts: string[] = [];
+    if (lead.link) metaParts.push(`**Link:** ${lead.link}`);
+    if (lead.scheduledDate) {
+      metaParts.push(`**Scheduled:** ${toCleanDateStr(lead.scheduledDate) || lead.scheduledDate}`);
+    }
+    if (lead.leadStatus) metaParts.push(`**Status:** ${lead.leadStatus}`);
+
+    const leadLines: string[] = [
+      '---',
+      '',
+      `## ${lead.id} — ${lead.name || 'Unnamed Lead'}`,
+    ];
+
+    if (metaParts.length > 0) {
+      leadLines.push(metaParts.join(' · '));
+    }
+
+    leadLines.push(
+      '',
+      '### Prompt',
+      '',
+      promptText ? formatMarkdownBlockquote(promptText) : '_No prompt saved._',
+      '',
+      '### 4-Step Multi-Channel Sequence',
+      ''
+    );
+
+    for (const step of steps) {
+      const sentBadge = step.sent
+        ? `✅ Sent${step.sentDate ? ` (${step.sentDate})` : ''}`
+        : '⬜ Not Sent';
+      leadLines.push(`- [${step.sent ? 'x' : ' '}] **${step.label}** — ${sentBadge}`);
+      leadLines.push('');
+      leadLines.push(step.message ? formatMarkdownBlockquote(step.message) : '> _No message written._');
+      leadLines.push('');
+    }
+
+    sections.push(leadLines.join('\n').trimEnd());
+  }
+
+  return sections.join('\n\n') + '\n';
+}
+
+/**
+ * Exports channel leads as CSV, JSON, or Markdown format.
  */
 export function exportChannelData(
   channel: MultiChannelType,
-  format: 'csv' | 'json',
+  format: 'csv' | 'json' | 'md',
   leads: ChannelLead[]
 ): void {
   const channelName = getChannelLabel(channel);
   const timestamp = new Date().toISOString().split('T')[0];
   const filename = `${channel}_leads_${timestamp}.${format}`;
 
-  if (format === 'json') {
+  if (format === 'md') {
+    const mdContent = generateChannelMarkdown(channel, leads);
+    const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8;' });
+    downloadBlob(blob, filename);
+  } else if (format === 'json') {
     const jsonStr = JSON.stringify(leads, null, 2);
     const blob = new Blob([jsonStr], { type: 'application/json' });
     downloadBlob(blob, filename);

@@ -138,11 +138,15 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
     const trimmed14 = followup14Draft.trim();
     const trimmed30 = breakup30Draft.trim();
 
+    const isAll4 = Boolean(trimmedInitial && trimmed7 && trimmed14 && trimmed30);
+    const hasAnyStep = Boolean(trimmedInitial || trimmed7 || trimmed14 || trimmed30);
+
     const updated = leads.map((l) => {
       if (l.id === selectedLeadId) {
         return {
           ...l,
           initialDM: trimmedInitial || undefined,
+          stagedDmMiniPitch: trimmedInitial || undefined,
           followupDM_Day4: trimmed7 || undefined,
           followupDM_Day7: trimmed7 || undefined,
           followupDM_Day8: trimmed14 || undefined,
@@ -152,7 +156,8 @@ export function DmSubPage({ channel, leads, onUpdateLeads }: DmSubPageProps) {
           followup3DM: trimmed7 || undefined,
           followup7DM: trimmed14 || undefined,
           customPitch: trimmedInitial || l.customPitch,
-          pitchSavedAt: new Date().toISOString(),
+          pitchSavedAt: hasAnyStep ? new Date().toISOString() : undefined,
+          isSequenceConfigured: isAll4,
         };
       }
       return l;

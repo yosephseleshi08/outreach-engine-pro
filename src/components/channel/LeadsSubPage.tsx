@@ -550,62 +550,8 @@ export function LeadsSubPage({
     }
   }, [leads, channel]);
 
-  // One-time sanitization:
-  // 1. Keep the first 6 Instagram leads (ID 1..6) and first 4 Combined/Email leads (ID 1..4) sequences untouched, syncing readiness strictly from actual message content.
-  // 2. Empty all 4 sequence messages for remaining leads (ID 7+ in IG, ID 5+ in Combined), but leave prompts intact!
-  useEffect(() => {
-    if (leads.length === 0) return;
-    const sanitizationKey = `crm_sequence_v4_sanitized_${channel}`;
-    if (localStorage.getItem(sanitizationKey)) return;
-
-    let modified = false;
-    const updated = leads.map((lead, idx) => {
-      const numId = lead.numericId ?? extractLeadNumericId(lead, idx);
-      const isProtected =
-        (channel === 'instagram' && numId <= 6) ||
-        (channel === 'combined' && numId <= 4);
-
-      if (isProtected) {
-        const hasAll4 =
-          Boolean((lead.initialDM || lead.customPitch || '').trim()) &&
-          Boolean((lead.followupDM_Day4 || lead.followupDM_Day7 || lead.followup3DM || '').trim()) &&
-          Boolean((lead.followupDM_Day8 || lead.followupDM_Day14 || lead.followup7DM || '').trim()) &&
-          Boolean((lead.breakupDM_Day14 || lead.breakupDM_Day30 || '').trim());
-        if (Boolean(lead.isSequenceConfigured) !== hasAll4) {
-          modified = true;
-          return {
-            ...lead,
-            isSequenceConfigured: hasAll4,
-          };
-        }
-        return lead;
-      }
-
-      // For all other leads: empty the 4 sequence messages, but KEEP prompt and leadAnalysis untouched!
-      modified = true;
-      return {
-        ...lead,
-        initialDM: '',
-        customPitch: '',
-        stagedDmMiniPitch: '',
-        followupDM_Day4: '',
-        followupDM_Day7: '',
-        followup3DM: '',
-        followupDM_Day8: '',
-        followupDM_Day14: '',
-        followup7DM: '',
-        breakupDM_Day14: '',
-        breakupDM_Day30: '',
-        isSequenceConfigured: false,
-        pitchSavedAt: undefined,
-      };
-    });
-
-    localStorage.setItem(sanitizationKey, 'true');
-    if (modified) {
-      onUpdateLeads(updated);
-    }
-  }, [leads, channel, onUpdateLeads]);
+  // Sync sequence readiness without ever erasing saved sequence messages.
+  // (Removed destructive sanitization pass that wiped 4-step sequences on ID 7+ / ID 5+.)
 
   // Prompt Modal State
   const [editingPromptLead, setEditingPromptLead] = useState<ChannelLead | null>(null);
@@ -1040,6 +986,10 @@ export function LeadsSubPage({
       trimmedDay14.length > 0;
 
     const isComplete = isAll4Written;
+    const hasAnyStep = Boolean(
+      trimmedInitial || trimmedDay4 || trimmedDay8 || trimmedDay14
+    );
+    const savedAtIso = hasAnyStep ? new Date().toISOString() : undefined;
 
     const updated = leads.map((l) => {
       if (l.id === editingLead.id) {
@@ -1056,7 +1006,7 @@ export function LeadsSubPage({
           followup7DM: trimmedDay8,
           breakupDM_Day14: trimmedDay14,
           breakupDM_Day30: trimmedDay14,
-          pitchSavedAt: isComplete ? (l.pitchSavedAt || new Date().toISOString()) : undefined,
+          pitchSavedAt: savedAtIso,
           isSequenceConfigured: isComplete,
         };
       }
@@ -1781,48 +1731,61 @@ export function LeadsSubPage({
               </button>
             )}
 
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                disabled={leads.length === 0}
+                className="px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Export</span>
+              </button>
+
+              {showExportMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-20"
+                    onClick={() => setShowExportMenu(false)}
+                  />
+                  <div className="absolute right-0 mt-2 w-44 rounded-xl border border-white/10 bg-slate-900 p-1 shadow-2xl z-30 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        exportChannelData(channel, 'csv', leads);
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full px-3 py-2 text-left rounded-lg hover:bg-white/10 text-slate-200 hover:text-white flex items-center gap-2 transition"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                      <span>Download CSV</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        exportChannelData(channel, 'json', leads);
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full px-3 py-2 text-left rounded-lg hover:bg-white/10 text-slate-200 hover:text-white flex items-center gap-2 transition"
+                    >
+                      <FileCode className="w-4 h-4 text-indigo-400" />
+                      <span>Download JSON</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
               type="button"
-              onClick={() => setShowExportMenu(!showExportMenu)}
+              onClick={() => exportChannelData(channel, 'md', leads)}
               disabled={leads.length === 0}
-              className="px-3.5 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition cursor-pointer"
+              title="Export all leads as Markdown (Prompt + 4-Step Sequence with sent marks)"
+              className="px-3.5 py-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-40 text-emerald-200 hover:text-white text-xs font-medium flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
             >
-              <Download className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Export</span>
+              <FileText className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Export MD</span>
             </button>
-
-            {showExportMenu && (
-              <>
-                <div
-                  className="fixed inset-0 z-20"
-                  onClick={() => setShowExportMenu(false)}
-                />
-                <div className="absolute right-0 mt-2 w-44 rounded-xl border border-white/10 bg-slate-900 p-1 shadow-2xl z-30 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      exportChannelData(channel, 'csv', leads);
-                      setShowExportMenu(false);
-                    }}
-                    className="w-full px-3 py-2 text-left rounded-lg hover:bg-white/10 text-slate-200 hover:text-white flex items-center gap-2 transition"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                    <span>Download CSV</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      exportChannelData(channel, 'json', leads);
-                      setShowExportMenu(false);
-                    }}
-                    className="w-full px-3 py-2 text-left rounded-lg hover:bg-white/10 text-slate-200 hover:text-white flex items-center gap-2 transition"
-                  >
-                    <FileCode className="w-4 h-4 text-indigo-400" />
-                    <span>Download JSON</span>
-                  </button>
-                </div>
-              </>
-            )}
           </div>
         </div>
       </div>
