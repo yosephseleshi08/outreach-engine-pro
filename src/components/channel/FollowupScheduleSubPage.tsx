@@ -30,12 +30,11 @@ import { EvidenceViewerModal } from '../EvidenceViewerModal';
 import { getLeadEvidenceCount } from '../../utils/evidenceStorage';
 import {
   getLocalTodayStr,
+  normalizeToLocalDateStr,
   isDateToday,
   isDateOverdue,
   getDayDifference,
   addDays,
-  addCadenceDays,
-  getCadenceDaysElapsed,
   markInitialSent,
   markFollowupSent,
   markLeadReplied,
@@ -295,29 +294,37 @@ export function FollowupScheduleSubPage({
     })
   );
 
+  const getTargetFollowupDate = (lead: ChannelLead, step: 1 | 2 | 3, effectiveInitial?: string | null) => {
+    const explicit =
+      step === 1
+        ? normalizeToLocalDateStr(lead.followup1Date)
+        : step === 2
+        ? normalizeToLocalDateStr(lead.followup2Date)
+        : normalizeToLocalDateStr(lead.followup3Date);
+    if (explicit) return explicit;
+    const base = effectiveInitial || getLeadBaseContactDate(lead);
+    const offset = step === 1 ? 4 : step === 2 ? 8 : 14;
+    return addDays(base, offset);
+  };
+
   // 2. Sub-tab: DAY 4 (Kitchen Ticket PDF)
   const day4ActionableLeads = cadencePool.filter((l) => isDay4FollowupDue(l, todayStr));
   const day4LockedLeads = cadencePool.filter((l) => {
     if (l.isCompleted || l.leadStatus === 'replied' || l.leadStatus === 'completed') return false;
     if (l.cadenceStatus === 'cancelled') return false;
     const resolved = resolveLeadCadenceStep(l, todayStr);
-    return (
-      !resolved.isFollowupDue &&
-      resolved.stageNumber === null &&
-      Boolean(resolved.effectiveInitialSentDate || l.dmSent) &&
-      (l.followupCount === 0 || l.followupCount === undefined) &&
-      resolved.daysSinceInitial < 4
-    );
+    if (resolved.isFollowupDue || resolved.stageNumber !== null) return false;
+    if (!resolved.effectiveInitialSentDate && !l.dmSent) return false;
+    const fuCount = l.followupCount ?? 0;
+    if (fuCount !== 0) return false;
+    const targetDate = getTargetFollowupDate(l, 1, resolved.effectiveInitialSentDate);
+    return targetDate > todayStr;
   });
   const nextDay4Countdown = day4LockedLeads.length > 0
     ? Math.min(...day4LockedLeads.map((l) => {
         const resolved = resolveLeadCadenceStep(l, todayStr);
-        if (resolved.effectiveInitialSentDate) {
-          return Math.max(1, 4 - resolved.daysSinceInitial);
-        }
-        const base = getLeadBaseContactDate(l);
-        const targetDate = l.followup1Date || addCadenceDays(base, 4);
-        const diff = getCadenceDaysElapsed(todayStr, targetDate);
+        const targetDate = getTargetFollowupDate(l, 1, resolved.effectiveInitialSentDate);
+        const diff = getDayDifference(targetDate, todayStr);
         return diff > 0 ? diff : 1;
       }))
     : 4;
@@ -328,24 +335,20 @@ export function FollowupScheduleSubPage({
     if (l.isCompleted || l.leadStatus === 'replied' || l.leadStatus === 'completed') return false;
     if (l.cadenceStatus === 'cancelled') return false;
     const resolved = resolveLeadCadenceStep(l, todayStr);
+    if (resolved.isFollowupDue || resolved.stageNumber !== null) return false;
+    if (!resolved.effectiveInitialSentDate && !l.dmSent) return false;
     const fuCount = l.followupCount ?? 0;
-    return (
-      !resolved.isFollowupDue &&
-      resolved.stageNumber === null &&
-      Boolean(resolved.effectiveInitialSentDate || l.dmSent) &&
-      ((fuCount === 1 && resolved.daysSinceInitial < 8) ||
-        (fuCount === 0 && resolved.daysSinceInitial > 4 && resolved.daysSinceInitial < 8))
-    );
+    const targetD4 = getTargetFollowupDate(l, 1, resolved.effectiveInitialSentDate);
+    const targetD8 = getTargetFollowupDate(l, 2, resolved.effectiveInitialSentDate);
+    if (fuCount === 1) return targetD8 > todayStr;
+    if (fuCount === 0) return todayStr > targetD4 && todayStr < targetD8;
+    return false;
   });
   const nextDay8Countdown = day8LockedLeads.length > 0
     ? Math.min(...day8LockedLeads.map((l) => {
         const resolved = resolveLeadCadenceStep(l, todayStr);
-        if (resolved.effectiveInitialSentDate) {
-          return Math.max(1, 8 - resolved.daysSinceInitial);
-        }
-        const base = getLeadBaseContactDate(l);
-        const targetDate = l.followup2Date || addCadenceDays(base, 8);
-        const diff = getCadenceDaysElapsed(todayStr, targetDate);
+        const targetDate = getTargetFollowupDate(l, 2, resolved.effectiveInitialSentDate);
+        const diff = getDayDifference(targetDate, todayStr);
         return diff > 0 ? diff : 1;
       }))
     : 8;
@@ -356,24 +359,20 @@ export function FollowupScheduleSubPage({
     if (l.isCompleted || l.leadStatus === 'replied' || l.leadStatus === 'completed') return false;
     if (l.cadenceStatus === 'cancelled') return false;
     const resolved = resolveLeadCadenceStep(l, todayStr);
+    if (resolved.isFollowupDue || resolved.stageNumber !== null) return false;
+    if (!resolved.effectiveInitialSentDate && !l.dmSent) return false;
     const fuCount = l.followupCount ?? 0;
-    return (
-      !resolved.isFollowupDue &&
-      resolved.stageNumber === null &&
-      Boolean(resolved.effectiveInitialSentDate || l.dmSent) &&
-      ((fuCount === 2 && resolved.daysSinceInitial < 14) ||
-        (fuCount <= 1 && resolved.daysSinceInitial > 8 && resolved.daysSinceInitial < 14))
-    );
+    const targetD8 = getTargetFollowupDate(l, 2, resolved.effectiveInitialSentDate);
+    const targetD14 = getTargetFollowupDate(l, 3, resolved.effectiveInitialSentDate);
+    if (fuCount === 2) return targetD14 > todayStr;
+    if (fuCount <= 1) return todayStr > targetD8 && todayStr < targetD14;
+    return false;
   });
   const nextDay14Countdown = day14LockedLeads.length > 0
     ? Math.min(...day14LockedLeads.map((l) => {
         const resolved = resolveLeadCadenceStep(l, todayStr);
-        if (resolved.effectiveInitialSentDate) {
-          return Math.max(1, 14 - resolved.daysSinceInitial);
-        }
-        const base = getLeadBaseContactDate(l);
-        const targetDate = l.followup3Date || addCadenceDays(base, 14);
-        const diff = getCadenceDaysElapsed(todayStr, targetDate);
+        const targetDate = getTargetFollowupDate(l, 3, resolved.effectiveInitialSentDate);
+        const diff = getDayDifference(targetDate, todayStr);
         return diff > 0 ? diff : 1;
       }))
     : 14;
@@ -538,10 +537,10 @@ export function FollowupScheduleSubPage({
               const targetDate = isInitial
                 ? (lead.scheduledDate || todayStr)
                 : isDay4
-                ? (lead.followup1Date || addCadenceDays(baseInitial, 4))
+                ? (lead.followup1Date || addDays(baseInitial, 4))
                 : isDay8
-                ? (lead.followup2Date || addCadenceDays(baseInitial, 8))
-                : (lead.followup3Date || addCadenceDays(baseInitial, 14));
+                ? (lead.followup2Date || addDays(baseInitial, 8))
+                : (lead.followup3Date || addDays(baseInitial, 14));
 
               const isOverdue = targetDate < todayStr;
               const isToday = targetDate === todayStr;
@@ -855,7 +854,7 @@ export function FollowupScheduleSubPage({
             <div className="space-y-3">
               {day4ActionableLeads.map((lead) => {
                 const day4Msg = getMessageForCadenceStage(lead, 4);
-                const fu1Date = lead.followup1Date || addCadenceDays(getEffectiveInitialSentDate(lead) || getLeadBaseContactDate(lead), 4);
+                const fu1Date = lead.followup1Date || addDays(getEffectiveInitialSentDate(lead) || getLeadBaseContactDate(lead), 4);
 
                 return (
                   <div
@@ -968,11 +967,8 @@ export function FollowupScheduleSubPage({
               </div>
 
               {day4LockedLeads.map((lead) => {
-                const resolved = resolveLeadCadenceStep(lead, todayStr);
-                const target = lead.followup1Date || addCadenceDays(resolved.effectiveInitialSentDate || getLeadBaseContactDate(lead), 4);
-                const diff = resolved.effectiveInitialSentDate
-                  ? Math.max(1, 4 - resolved.daysSinceInitial)
-                  : Math.max(1, getCadenceDaysElapsed(todayStr, target));
+                const target = lead.followup1Date || addDays(getLeadBaseContactDate(lead), 4);
+                const diff = Math.max(1, getDayDifference(target, todayStr));
                 const templates = getCadenceMessageTemplates(lead);
 
                 return (
@@ -1058,7 +1054,7 @@ export function FollowupScheduleSubPage({
             <div className="space-y-3">
               {day8ActionableLeads.map((lead) => {
                 const day8Msg = getMessageForCadenceStage(lead, 8);
-                const fu2Date = lead.followup2Date || addCadenceDays(getEffectiveInitialSentDate(lead) || getLeadBaseContactDate(lead), 8);
+                const fu2Date = lead.followup2Date || addDays(getEffectiveInitialSentDate(lead) || getLeadBaseContactDate(lead), 8);
 
                 return (
                   <div
@@ -1188,11 +1184,8 @@ export function FollowupScheduleSubPage({
               </div>
 
               {day8LockedLeads.map((lead) => {
-                const resolved = resolveLeadCadenceStep(lead, todayStr);
-                const target = lead.followup2Date || addCadenceDays(resolved.effectiveInitialSentDate || getLeadBaseContactDate(lead), 8);
-                const diff = resolved.effectiveInitialSentDate
-                  ? Math.max(1, 8 - resolved.daysSinceInitial)
-                  : Math.max(1, getCadenceDaysElapsed(todayStr, target));
+                const target = lead.followup2Date || addDays(getLeadBaseContactDate(lead), 8);
+                const diff = Math.max(1, getDayDifference(target, todayStr));
                 const templates = getCadenceMessageTemplates(lead);
 
                 return (
@@ -1278,7 +1271,7 @@ export function FollowupScheduleSubPage({
             <div className="space-y-3">
               {day14ActionableLeads.map((lead) => {
                 const day14Msg = getMessageForCadenceStage(lead, 14);
-                const fu3Date = lead.followup3Date || addCadenceDays(getEffectiveInitialSentDate(lead) || getLeadBaseContactDate(lead), 14);
+                const fu3Date = lead.followup3Date || addDays(getEffectiveInitialSentDate(lead) || getLeadBaseContactDate(lead), 14);
 
                 return (
                   <div
@@ -1408,11 +1401,8 @@ export function FollowupScheduleSubPage({
               </div>
 
               {day14LockedLeads.map((lead) => {
-                const resolved = resolveLeadCadenceStep(lead, todayStr);
-                const target = lead.followup3Date || addCadenceDays(resolved.effectiveInitialSentDate || getLeadBaseContactDate(lead), 14);
-                const diff = resolved.effectiveInitialSentDate
-                  ? Math.max(1, 14 - resolved.daysSinceInitial)
-                  : Math.max(1, getCadenceDaysElapsed(todayStr, target));
+                const target = lead.followup3Date || addDays(getLeadBaseContactDate(lead), 14);
+                const diff = Math.max(1, getDayDifference(target, todayStr));
                 const templates = getCadenceMessageTemplates(lead);
 
                 return (

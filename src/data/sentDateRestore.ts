@@ -16,7 +16,6 @@ import {
   saveAllDailyObligations,
 } from '../utils/dailyObligation';
 import {
-  addCadenceDays,
   addLocalDays,
   BACKSTAGE_LEADS_KEY,
   COMBINED_LEADS_KEY,
@@ -375,9 +374,9 @@ export function applySentDateRestore(): SentDateRestoreResult {
       (normSched ? COHORT_DEC_TO_NOV_DATE[normSched] : undefined) ||
       '2026-11-16';
 
-    const fu1 = addCadenceDays(restoredSentDate, 4);
-    const fu2 = addCadenceDays(restoredSentDate, 8);
-    const fu3 = addCadenceDays(restoredSentDate, 14);
+    const fu1 = toLocalDateString(lead.followup1Date) || shiftDueDateOffRestDay(addLocalDays(restoredSentDate, 4));
+    const fu2 = toLocalDateString(lead.followup2Date) || shiftDueDateOffRestDay(addLocalDays(restoredSentDate, 8));
+    const fu3 = toLocalDateString(lead.followup3Date) || shiftDueDateOffRestDay(addLocalDays(restoredSentDate, 14));
 
     restoreLogEntries.push({
       id: `restore_${lead.id}_D0_${restoredSentDate}`,

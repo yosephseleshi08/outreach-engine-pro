@@ -187,9 +187,6 @@ function resolveEffectiveInitialDate(lead: ChannelLead): string | null {
       normDispatchedAt ||
       normLastContact ||
       normFirstContact ||
-      normF1Date ||
-      normF2Date ||
-      normF3Date ||
       fuCount > 0 ||
       f1Sent ||
       f2Sent ||
@@ -261,6 +258,8 @@ function countFollowupsDueForDate(leads: ChannelLead[], dateStr: string): number
 
     if (fuCount >= 3) continue;
 
+    if (effectiveInitial && dateStr < effectiveInitial) continue;
+
     const daysElapsed = effectiveInitial
       ? getDaysElapsedLocal(effectiveInitial, dateStr)
       : fuCount === 0
@@ -269,10 +268,18 @@ function countFollowupsDueForDate(leads: ChannelLead[], dateStr: string): number
       ? 8
       : 14;
 
+    const normF1 = toLocalDateString(lead.followup1Date);
+    const normF2 = toLocalDateString(lead.followup2Date);
+    const normF3 = toLocalDateString(lead.followup3Date);
+
+    const isDay14Due = normF3 ? dateStr === normF3 : daysElapsed === 14;
+    const isDay8Due = normF2 ? dateStr === normF2 : daysElapsed === 8;
+    const isDay4Due = normF1 ? dateStr === normF1 : daysElapsed === 4;
+
     if (
-      (daysElapsed === 14 && fuCount <= 2) ||
-      (daysElapsed === 8 && fuCount <= 1) ||
-      (daysElapsed === 4 && fuCount === 0)
+      (isDay14Due && fuCount <= 2) ||
+      (isDay8Due && fuCount <= 1) ||
+      (isDay4Due && fuCount === 0)
     ) {
       count++;
     }
@@ -754,6 +761,9 @@ export function getLeadWaveRank(lead: ChannelLead, todayStr = getLocalTodayDateS
       fuCount > 0
   );
   if (hasSent) {
+    const normF1 = toLocalDateString(lead.followup1Date);
+    const normF2 = toLocalDateString(lead.followup2Date);
+    const normF3 = toLocalDateString(lead.followup3Date);
     const daysElapsed = effectiveInitial
       ? getDaysElapsedLocal(effectiveInitial, todayStr)
       : fuCount === 0
@@ -761,9 +771,9 @@ export function getLeadWaveRank(lead: ChannelLead, todayStr = getLocalTodayDateS
       : fuCount === 1
       ? 8
       : 14;
-    if (daysElapsed >= 14 && fuCount <= 2) return 1; // D14
-    if (daysElapsed >= 8 && fuCount <= 1) return 2; // D8
-    if (daysElapsed >= 4 && fuCount === 0) return 3; // D4
+    if ((normF3 ? todayStr >= normF3 : daysElapsed >= 14) && fuCount <= 2) return 1; // D14
+    if ((normF2 ? todayStr >= normF2 : daysElapsed >= 8) && fuCount <= 1) return 2; // D8
+    if ((normF1 ? todayStr >= normF1 : daysElapsed >= 4) && fuCount === 0) return 3; // D4
     if (fuCount === 2) return 1;
     if (fuCount === 1) return 2;
     return 3; // D4

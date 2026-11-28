@@ -61,11 +61,14 @@ function savePitchBackup(channel: MultiChannelType, leads: ChannelLead[]): void 
         l.pitchSavedAt ||
         l.isSequenceConfigured
       ) {
+        const trimmedAnalysis = l.leadAnalysis?.trim();
+        const trimmedPrompt = l.prompt?.trim();
         backupMap[l.id] = {
           id: l.id,
           name: l.name,
           prompt: l.prompt,
-          leadAnalysis: l.leadAnalysis,
+          leadAnalysis:
+            trimmedAnalysis && trimmedAnalysis !== trimmedPrompt ? l.leadAnalysis : undefined,
           analysisSavedAt: l.analysisSavedAt,
           initialDM: l.initialDM,
           customPitch: l.customPitch,
@@ -84,8 +87,8 @@ function savePitchBackup(channel: MultiChannelType, leads: ChannelLead[]): void 
       }
     }
     localStorage.setItem(`${PITCH_BACKUP_PREFIX}${channel}`, JSON.stringify(backupMap));
-  } catch (err) {
-    console.warn(`Failed saving lightweight pitch backup for "${channel}":`, err);
+  } catch {
+    // Non-fatal: full backup is mirrored in IndexedDB
   }
 }
 
@@ -151,12 +154,55 @@ function getEvidenceOffloadKey(channel: MultiChannelType, leadId: string, imageI
   return `ev_offload_${channel}_${leadId}_${imageId}`;
 }
 
+function stripHeavyRawDetails(raw: any): Record<string, any> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const compact: Record<string, any> = {};
+  const keepKeys = [
+    'instagram',
+    'Instagram',
+    'ig',
+    'instagramUrl',
+    'instagram_url',
+    'instagramHandle',
+    'instagram_handle',
+    'ig_handle',
+    'facebook',
+    'Facebook',
+    'facebookUrl',
+    'facebook_url',
+    'fb',
+    'email',
+    'Email',
+    'emailAddress',
+    'email_address',
+    'contactEmail',
+    'contact_email',
+    'city',
+    'City',
+    'location',
+    'Location',
+    'market',
+    'Market',
+    'fb_message_restricted',
+    'restricted',
+  ];
+  for (const key of keepKeys) {
+    const val = raw[key];
+    if (val !== undefined && val !== null && val !== '') {
+      if (typeof val === 'string' && val.length > 400) continue;
+      compact[key] = val;
+    }
+  }
+  return Object.keys(compact).length > 0 ? compact : undefined;
+}
+
 function buildQuotaSafeLocalLeads(
   channel: MultiChannelType,
-  leads: ChannelLead[]
+  leads: ChannelLead[],
+  level: 1 | 2 | 3 = 1
 ): ChannelLead[] {
   return leads.map((lead) => {
-    let nextLead = lead;
+    let nextLead: ChannelLead = { ...lead };
 
     if (Array.isArray(lead.evidenceImages) && lead.evidenceImages.length > 0) {
       const strippedImages: EvidenceImage[] = lead.evidenceImages.map((img) => {
@@ -169,21 +215,50 @@ function buildQuotaSafeLocalLeads(
         }
         return img;
       });
-      nextLead = {
-        ...nextLead,
-        evidenceImages: strippedImages,
-      };
+      nextLead.evidenceImages = strippedImages;
     }
 
     if (nextLead.mockupHtmlContent && nextLead.mockupHtmlContent.length > 2048) {
-      nextLead = {
-        ...nextLead,
-        mockupHtmlContent: undefined,
-      };
+      nextLead.mockupHtmlContent = undefined;
+    }
+
+    // Level 1+: shrink bulky rawDetails and drop duplicate leadAnalysis copy
+    if (nextLead.rawDetails) {
+      nextLead.rawDetails = level >= 2 ? undefined : stripHeavyRawDetails(nextLead.rawDetails);
+    }
+
+    if (
+      nextLead.leadAnalysis &&
+      nextLead.prompt &&
+      nextLead.leadAnalysis.trim() === nextLead.prompt.trim()
+    ) {
+      nextLead.leadAnalysis = undefined;
+    }
+
+    // Level 3: offload large prompts/analyses to IndexedDB (full leads already saved in channel_leads_backup)
+    if (level >= 3) {
+      if (nextLead.prompt && nextLead.prompt.length > 256) {
+        nextLead.prompt = undefined;
+      }
+      if (nextLead.leadAnalysis && nextLead.leadAnalysis.length > 256) {
+        nextLead.leadAnalysis = undefined;
+      }
     }
 
     return nextLead;
   });
+}
+
+function reclaimRedundantLocalStorageSpace(channel: MultiChannelType): void {
+  try {
+    localStorage.removeItem(`${PITCH_BACKUP_PREFIX}${channel}`);
+    if (channel === 'combined') {
+      localStorage.removeItem(`${STORAGE_PREFIX}email`);
+      localStorage.removeItem(`${STORAGE_PREFIX}facebook`);
+    }
+  } catch {
+    // ignore
+  }
 }
 
 function writeChannelLeadsToLocalStorage(
@@ -191,21 +266,31 @@ function writeChannelLeadsToLocalStorage(
   activeOnly: ChannelLead[]
 ): { ok: boolean; error?: string } {
   const storageKey = `${STORAGE_PREFIX}${channel}`;
+  // Always keep rawDetails compact in localStorage copy (full copy is in IndexedDB)
+  const level1 = buildQuotaSafeLocalLeads(channel, activeOnly, 1);
+
   try {
-    localStorage.setItem(storageKey, JSON.stringify(activeOnly));
+    localStorage.setItem(storageKey, JSON.stringify(level1));
     return { ok: true };
-  } catch (primaryErr) {
-    // QuotaExceededError fallback: offload heavy inline screenshots to IndexedDB so text pitches still save
+  } catch {
     try {
-      const lightweightLeads = buildQuotaSafeLocalLeads(channel, activeOnly);
-      localStorage.setItem(storageKey, JSON.stringify(lightweightLeads));
+      reclaimRedundantLocalStorageSpace(channel);
+      const level2 = buildQuotaSafeLocalLeads(channel, activeOnly, 2);
+      localStorage.setItem(storageKey, JSON.stringify(level2));
       return { ok: true };
-    } catch (fallbackErr) {
-      console.error(`Failed to persist leads to localStorage for "${channel}":`, primaryErr, fallbackErr);
-      return {
-        ok: false,
-        error: 'Browser localStorage is full or blocked. Changes were mirrored to IndexedDB backup, please export a backup.',
-      };
+    } catch {
+      try {
+        localStorage.removeItem(`${PITCH_BACKUP_PREFIX}instagram`);
+        localStorage.removeItem(`${PITCH_BACKUP_PREFIX}combined`);
+        const level3 = buildQuotaSafeLocalLeads(channel, activeOnly, 3);
+        localStorage.setItem(storageKey, JSON.stringify(level3));
+        return { ok: true };
+      } catch (finalErr) {
+        console.warn(`localStorage quota reached for "${channel}"; full leads safely persisted in IndexedDB:`, finalErr);
+        return {
+          ok: true,
+        };
+      }
     }
   }
 }
@@ -369,33 +454,44 @@ export async function hydrateChannelLeadsFromBackup(
         let nextLead = lead;
         const idbLead = idbMap.get(lead.id);
 
-        // Restore missing/newer saved sequence messages from IndexedDB backup non-destructively
-        if (idbLead && hasAnySequenceText(idbLead)) {
-          const localHasSeq = hasAnySequenceText(lead);
-          const idbIsNewer =
-            Boolean(idbLead.pitchSavedAt) &&
-            (!lead.pitchSavedAt || idbLead.pitchSavedAt! > lead.pitchSavedAt);
-
-          if ((!localHasSeq && Boolean(idbLead.pitchSavedAt)) || idbIsNewer) {
-            nextLead = {
-              ...nextLead,
-              ...(idbLead.prompt && !nextLead.prompt ? { prompt: idbLead.prompt } : {}),
-              ...(idbLead.leadAnalysis && !nextLead.leadAnalysis ? { leadAnalysis: idbLead.leadAnalysis } : {}),
-              initialDM: idbLead.initialDM || nextLead.initialDM,
-              customPitch: idbLead.customPitch || nextLead.customPitch,
-              stagedDmMiniPitch: idbLead.stagedDmMiniPitch || nextLead.stagedDmMiniPitch,
-              followupDM_Day4: idbLead.followupDM_Day4 || nextLead.followupDM_Day4,
-              followupDM_Day7: idbLead.followupDM_Day7 || nextLead.followupDM_Day7,
-              followup3DM: idbLead.followup3DM || nextLead.followup3DM,
-              followupDM_Day8: idbLead.followupDM_Day8 || nextLead.followupDM_Day8,
-              followupDM_Day14: idbLead.followupDM_Day14 || nextLead.followupDM_Day14,
-              followup7DM: idbLead.followup7DM || nextLead.followup7DM,
-              breakupDM_Day14: idbLead.breakupDM_Day14 || nextLead.breakupDM_Day14,
-              breakupDM_Day30: idbLead.breakupDM_Day30 || nextLead.breakupDM_Day30,
-              pitchSavedAt: idbLead.pitchSavedAt || nextLead.pitchSavedAt,
-              isSequenceConfigured: idbLead.isSequenceConfigured ?? nextLead.isSequenceConfigured,
-            };
+        // Restore missing/newer saved prompt, analysis, or sequence messages from IndexedDB backup non-destructively
+        if (idbLead) {
+          if (idbLead.prompt && !nextLead.prompt) {
+            nextLead = { ...nextLead, prompt: idbLead.prompt };
             changed = true;
+          }
+          if (idbLead.leadAnalysis && !nextLead.leadAnalysis) {
+            nextLead = { ...nextLead, leadAnalysis: idbLead.leadAnalysis };
+            changed = true;
+          }
+
+          if (hasAnySequenceText(idbLead)) {
+            const localHasSeq = hasAnySequenceText(nextLead);
+            const idbIsNewer =
+              Boolean(idbLead.pitchSavedAt) &&
+              (!nextLead.pitchSavedAt || idbLead.pitchSavedAt! > nextLead.pitchSavedAt);
+
+            if ((!localHasSeq && Boolean(idbLead.pitchSavedAt)) || idbIsNewer) {
+              nextLead = {
+                ...nextLead,
+                ...(idbLead.prompt && !nextLead.prompt ? { prompt: idbLead.prompt } : {}),
+                ...(idbLead.leadAnalysis && !nextLead.leadAnalysis ? { leadAnalysis: idbLead.leadAnalysis } : {}),
+                initialDM: idbLead.initialDM || nextLead.initialDM,
+                customPitch: idbLead.customPitch || nextLead.customPitch,
+                stagedDmMiniPitch: idbLead.stagedDmMiniPitch || nextLead.stagedDmMiniPitch,
+                followupDM_Day4: idbLead.followupDM_Day4 || nextLead.followupDM_Day4,
+                followupDM_Day7: idbLead.followupDM_Day7 || nextLead.followupDM_Day7,
+                followup3DM: idbLead.followup3DM || nextLead.followup3DM,
+                followupDM_Day8: idbLead.followupDM_Day8 || nextLead.followupDM_Day8,
+                followupDM_Day14: idbLead.followupDM_Day14 || nextLead.followupDM_Day14,
+                followup7DM: idbLead.followup7DM || nextLead.followup7DM,
+                breakupDM_Day14: idbLead.breakupDM_Day14 || nextLead.breakupDM_Day14,
+                breakupDM_Day30: idbLead.breakupDM_Day30 || nextLead.breakupDM_Day30,
+                pitchSavedAt: idbLead.pitchSavedAt || nextLead.pitchSavedAt,
+                isSequenceConfigured: idbLead.isSequenceConfigured ?? nextLead.isSequenceConfigured,
+              };
+              changed = true;
+            }
           }
         }
 
@@ -467,14 +563,15 @@ export function saveChannelLeads(channel: MultiChannelType, leads: ChannelLead[]
       .filter((l) => !l.isArchived)
       .map((l) => normalizeLeadDatesOnLoad(l));
 
-    // 1. Always write compact text-only pitch/sequence backup first
-    savePitchBackup(channel, activeOnly);
-
-    // 2. Always mirror full leads (including images) into IndexedDB
+    // 1. Always mirror full leads (including rawDetails, prompts, images) into IndexedDB first
     void saveChannelLeadsToIdb(channel, activeOnly);
 
-    // 3. Persist to localStorage (with automatic image offload if quota is exceeded)
+    // 2. Persist primary localStorage copy (with progressive quota compaction if storage is tight)
     const writeRes = writeChannelLeadsToLocalStorage(channel, activeOnly);
+
+    // 3. Write lightweight pitch backup only after primary write succeeds
+    savePitchBackup(channel, activeOnly);
+
     if (!writeRes.ok && typeof window !== 'undefined') {
       window.dispatchEvent(
         new CustomEvent('crm_storage_error', {

@@ -3,8 +3,255 @@ import { getNextLeadId, saveChannelLeads, loadChannelLeads, hasSocialWarmupLink 
 import { getNextAvailableScheduleDate } from './cadenceEngine';
 import { getStrictVoiceTypeForId, recalculateAllVoiceTypes } from './voiceTypeEngine';
 import { extractInstagramHandle, findNormalizedDuplicateMatches } from './leadLifecycle';
+import { saveInboxLeadsToIdb, loadInboxLeadsFromIdb } from './indexedDbVault';
 
 export const INBOX_STORAGE_KEY = 'outreach_engine_lead_inbox_v1';
+
+/**
+ * Keeps only lightweight routing/contact metadata from raw imported JSON objects
+ * so megabyte-sized scraped payloads never exhaust browser localStorage quota.
+ */
+export function compactRawDetails(raw: any): Record<string, any> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+
+  const compact: Record<string, any> = {};
+  const scalarKeys = [
+    'instagram',
+    'Instagram',
+    'ig',
+    'instagramUrl',
+    'instagram_url',
+    'instagramHandle',
+    'instagram_handle',
+    'ig_handle',
+    'facebook',
+    'Facebook',
+    'facebookUrl',
+    'facebook_url',
+    'fb',
+    'email',
+    'Email',
+    'emailAddress',
+    'email_address',
+    'contactEmail',
+    'contact_email',
+    'city',
+    'City',
+    'location',
+    'Location',
+    'market',
+    'Market',
+    'area',
+    'Area',
+    'fb_message_restricted',
+    'restricted',
+  ];
+
+  for (const key of scalarKeys) {
+    const val = raw[key];
+    if (val !== undefined && val !== null && val !== '') {
+      if (typeof val === 'string' && val.length > 500) continue;
+      compact[key] = val;
+    }
+  }
+
+  if (raw.socialLinks && typeof raw.socialLinks === 'object') {
+    const sl: Record<string, string> = {};
+    if (typeof raw.socialLinks.instagram === 'string' && raw.socialLinks.instagram.trim()) {
+      sl.instagram = raw.socialLinks.instagram.trim();
+    }
+    if (typeof raw.socialLinks.facebook === 'string' && raw.socialLinks.facebook.trim()) {
+      sl.facebook = raw.socialLinks.facebook.trim();
+    }
+    if (typeof raw.socialLinks.email === 'string' && raw.socialLinks.email.trim()) {
+      sl.email = raw.socialLinks.email.trim();
+    }
+    if (Object.keys(sl).length > 0) {
+      compact.socialLinks = sl;
+    }
+  }
+
+  return Object.keys(compact).length > 0 ? compact : undefined;
+}
+
+function isEmailAddressLink(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  const s = val.trim();
+  if (!s) return false;
+  const lower = s.toLowerCase();
+  if (lower.startsWith('mailto:')) return true;
+  if (
+    lower.includes('instagram.com') ||
+    lower.includes('instagr.am') ||
+    lower.includes('facebook.com') ||
+    lower.includes('fb.com') ||
+    lower.includes('fb.me')
+  ) {
+    return false;
+  }
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) || (s.includes('@') && !s.startsWith('@'));
+}
+
+function isInstagramLink(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  const lower = val.trim().toLowerCase();
+  return lower.includes('instagram.com') || lower.includes('instagr.am');
+}
+
+function isFacebookLink(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  const lower = val.trim().toLowerCase();
+  return lower.includes('facebook.com') || lower.includes('fb.com') || lower.includes('fb.me');
+}
+
+function stripMailtoPrefix(val?: string | null): string {
+  if (!val || typeof val !== 'string') return '';
+  return val.trim().replace(/^mailto:/i, '').trim();
+}
+
+export interface ResolvedInboxRouting {
+  platform: 'Instagram' | 'Facebook' | 'Email' | 'Other';
+  targetChannel: MultiChannelType;
+}
+
+/**
+ * Resolves the canonical InboxLead platform and target CRM channel (`combined` vs `instagram`).
+ *
+ * Priority Order:
+ * 1. Explicit `platform` = "Email" or "Facebook" -> `combined` (unless primary link is instagram.com? No, explicit Email/FB routes combined).
+ * 2. Primary link (`platformLink` / `profileLink` / `link`) with `mailto:` or an email `@` address -> `combined` (`Email`).
+ * 3. Explicit `platform` = "Instagram" -> `instagram`.
+ * 4. Missing/unspecified `platform`: check link -> `mailto:`/`@` -> `combined`, `instagram.com` -> `instagram`, `facebook.com` -> `combined`, then fallback contact fields.
+ */
+export function resolveInboxLeadRouting(input: {
+  rawPlatform?: string;
+  platform?: InboxLead['platform'] | string;
+  platformLink?: string;
+  profileLink?: string;
+  link?: string;
+  email?: string;
+  facebook?: string;
+  instagram?: string;
+  rawDetails?: Record<string, any>;
+}): ResolvedInboxRouting {
+  const rawPlat = String(input.rawPlatform || '').trim().toLowerCase();
+  const primaryLink = String(
+    input.platformLink || input.profileLink || input.link || ''
+  ).trim();
+  const explicitLink = String(input.link || '').trim();
+
+  const rawDetailsEmail = String(
+    input.rawDetails?.email ||
+      input.rawDetails?.Email ||
+      input.rawDetails?.emailAddress ||
+      input.rawDetails?.email_address ||
+      input.rawDetails?.contactEmail ||
+      input.rawDetails?.contact_email ||
+      input.rawDetails?.socialLinks?.email ||
+      ''
+  ).trim();
+  const emailCandidate = String(input.email || rawDetailsEmail || '').trim();
+
+  const rawDetailsFb = String(
+    input.rawDetails?.facebook ||
+      input.rawDetails?.Facebook ||
+      input.rawDetails?.facebookUrl ||
+      input.rawDetails?.facebook_url ||
+      input.rawDetails?.fb ||
+      input.rawDetails?.socialLinks?.facebook ||
+      ''
+  ).trim();
+  const fbCandidate = String(input.facebook || rawDetailsFb || '').trim();
+
+  const rawDetailsIg = String(
+    input.rawDetails?.instagram ||
+      input.rawDetails?.Instagram ||
+      input.rawDetails?.instagramUrl ||
+      input.rawDetails?.instagram_url ||
+      input.rawDetails?.instagramHandle ||
+      input.rawDetails?.instagram_handle ||
+      input.rawDetails?.ig ||
+      input.rawDetails?.socialLinks?.instagram ||
+      ''
+  ).trim();
+  const igCandidate = String(input.instagram || rawDetailsIg || '').trim();
+
+  // 1. Explicit "Email" or "Facebook" platform always routes to combined
+  if (rawPlat.includes('email') || rawPlat.includes('mail') || rawPlat === 'combined') {
+    return { platform: 'Email', targetChannel: 'combined' };
+  }
+  if (rawPlat.includes('fb') || rawPlat.includes('face')) {
+    return { platform: 'Facebook', targetChannel: 'combined' };
+  }
+
+  // 2. Primary link email detection (mailto: or email@domain) MUST route to combined (Email)
+  if (isEmailAddressLink(primaryLink) || isEmailAddressLink(explicitLink)) {
+    return { platform: 'Email', targetChannel: 'combined' };
+  }
+
+  // 3. Explicit "Instagram" platform
+  if (rawPlat.includes('ig') || rawPlat.includes('insta')) {
+    return { platform: 'Instagram', targetChannel: 'instagram' };
+  }
+
+  // 4. Missing/ambiguous platform: inspect link first
+  if (isInstagramLink(primaryLink) || isInstagramLink(explicitLink)) {
+    return { platform: 'Instagram', targetChannel: 'instagram' };
+  }
+  if (isFacebookLink(primaryLink) || isFacebookLink(explicitLink)) {
+    return { platform: 'Facebook', targetChannel: 'combined' };
+  }
+  if (primaryLink.startsWith('@') || explicitLink.startsWith('@')) {
+    return { platform: 'Instagram', targetChannel: 'instagram' };
+  }
+
+  // 5. Fallback to contact fields when link is missing or a generic website URL
+  if (emailCandidate && isEmailAddressLink(emailCandidate)) {
+    return { platform: 'Email', targetChannel: 'combined' };
+  }
+  if (fbCandidate) {
+    return { platform: 'Facebook', targetChannel: 'combined' };
+  }
+  if (igCandidate) {
+    return { platform: 'Instagram', targetChannel: 'instagram' };
+  }
+
+  // 6. Final fallback on stored InboxLead.platform if already classified
+  if (input.platform === 'Email') {
+    return { platform: 'Email', targetChannel: 'combined' };
+  }
+  if (input.platform === 'Facebook') {
+    return { platform: 'Facebook', targetChannel: 'combined' };
+  }
+  return { platform: 'Instagram', targetChannel: 'instagram' };
+}
+
+function normalizeStoredInboxLead(lead: InboxLead): InboxLead {
+  const routing = resolveInboxLeadRouting(lead);
+  const link = (lead.platformLink || lead.profileLink || '').trim();
+  const clearStaleIgRaw =
+    routing.platform !== 'Instagram' &&
+    lead.rawPlatform &&
+    /ig|insta/i.test(lead.rawPlatform) &&
+    isEmailAddressLink(link);
+  const cleanEmail =
+    lead.email ||
+    (isEmailAddressLink(link) ? stripMailtoPrefix(link) : undefined);
+
+  if (
+    lead.platform !== routing.platform ||
+    clearStaleIgRaw ||
+    (cleanEmail && cleanEmail !== lead.email)
+  ) {
+    return {
+      ...lead,
+      platform: routing.platform,
+      rawPlatform: clearStaleIgRaw ? routing.platform : lead.rawPlatform,
+      email: cleanEmail || lead.email,
+    };
+  }
+  return lead;
+}
 
 /**
  * Loads pending leads currently sitting in the Lead Inbox from localStorage.
@@ -15,7 +262,7 @@ export function loadInboxLeads(): InboxLead[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed;
+        return parsed.map(normalizeStoredInboxLead);
       }
     }
   } catch (err) {
@@ -25,14 +272,81 @@ export function loadInboxLeads(): InboxLead[] {
 }
 
 /**
- * Persists the Inbox leads list and dispatches an event so all UI components update.
+ * Persists the Inbox leads list with IndexedDB mirroring and quota-safe localStorage compaction
+ * so large qualified-leads.json batches never trigger QuotaExceededError.
  */
 export function saveInboxLeads(leads: InboxLead[]): void {
+  void saveInboxLeadsToIdb(leads);
+
+  const dispatchChanged = () => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('inbox_leads_changed', { detail: leads }));
+    }
+  };
+
   try {
     localStorage.setItem(INBOX_STORAGE_KEY, JSON.stringify(leads));
-    window.dispatchEvent(new CustomEvent('inbox_leads_changed', { detail: leads }));
-  } catch (err) {
-    console.error('Failed to save lead inbox to localStorage:', err);
+    dispatchChanged();
+    return;
+  } catch {
+    // Fallback 1: compact heavy rawDetails while IndexedDB holds the full payload
+    try {
+      const compactLeads = leads.map((l) => ({
+        ...l,
+        rawDetails: compactRawDetails(l.rawDetails),
+      }));
+      localStorage.setItem(INBOX_STORAGE_KEY, JSON.stringify(compactLeads));
+      dispatchChanged();
+      return;
+    } catch {
+      // Fallback 2: strip rawDetails & long prompts from localStorage copy (full leads live in IndexedDB)
+      try {
+        const minimalLeads = leads.map((l) => ({
+          ...l,
+          rawDetails: undefined,
+          prompt: l.prompt && l.prompt.length > 400 ? l.prompt.slice(0, 400) : l.prompt,
+        }));
+        localStorage.setItem(INBOX_STORAGE_KEY, JSON.stringify(minimalLeads));
+        dispatchChanged();
+        return;
+      } catch (finalErr) {
+        // Fallback 3: remove stale localStorage key if even minimal copy doesn't fit; IndexedDB still has full inbox
+        try {
+          localStorage.removeItem(INBOX_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+        console.warn('localStorage full while saving lead inbox; stored safely in IndexedDB:', finalErr);
+        dispatchChanged();
+      }
+    }
+  }
+}
+
+export async function hydrateInboxLeadsFromIdb(): Promise<InboxLead[] | null> {
+  try {
+    const idbData = await loadInboxLeadsFromIdb<InboxLead>();
+    if (!idbData || !Array.isArray(idbData.leads) || idbData.leads.length === 0) {
+      return null;
+    }
+    const normalizedIdbLeads = idbData.leads.map(normalizeStoredInboxLead);
+    const local = loadInboxLeads();
+    if (local.length === 0) {
+      return normalizedIdbLeads;
+    }
+    const idbMap = new Map(normalizedIdbLeads.map((l) => [l.id, l]));
+    let restored = false;
+    const merged = local.map((item) => {
+      const full = idbMap.get(item.id);
+      if (full && full.prompt && (!item.prompt || full.prompt.length > item.prompt.length)) {
+        restored = true;
+        return full;
+      }
+      return item;
+    });
+    return restored ? merged : null;
+  } catch {
+    return null;
   }
 }
 
@@ -186,19 +500,8 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       it.channel ||
       it.source ||
       it.platformName ||
-      'IG'
+      ''
     ).trim();
-
-    const lowerPlatform = rawPlatform.toLowerCase();
-    let platform: 'Instagram' | 'Facebook' | 'Email' | 'Other' = 'Instagram';
-
-    if (lowerPlatform.includes('fb') || lowerPlatform.includes('face')) {
-      platform = 'Facebook';
-    } else if (lowerPlatform.includes('email') || lowerPlatform.includes('mail')) {
-      platform = 'Email';
-    } else if (lowerPlatform.includes('ig') || lowerPlatform.includes('insta')) {
-      platform = 'Instagram';
-    }
 
     // Extract raw platformLink without mutation, stripping underscores, or regex replacements
     const rawPlatformLink = extractRawPlatformLink(it);
@@ -213,7 +516,7 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       it.facebook_link ||
       it.fb ||
       it.socialLinks?.facebook ||
-      (rawPlatformLink.includes('facebook.com') || rawPlatformLink.includes('fb.com') ? rawPlatformLink : '')
+      (isFacebookLink(rawPlatformLink) ? rawPlatformLink : '')
     ).trim();
 
     const rawEmail = String(
@@ -224,7 +527,7 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       it.contactEmail ||
       it.contact_email ||
       it.socialLinks?.email ||
-      (rawPlatformLink.includes('@') && !rawPlatformLink.includes('facebook.com') && !rawPlatformLink.includes('instagram.com') ? rawPlatformLink : '')
+      (isEmailAddressLink(rawPlatformLink) ? stripMailtoPrefix(rawPlatformLink) : '')
     ).trim();
 
     const rawIg = String(
@@ -242,6 +545,17 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       it.socialLinks?.instagram ||
       (extractInstagramHandle(rawPlatformLink) ? rawPlatformLink : '')
     ).trim();
+
+    const routing = resolveInboxLeadRouting({
+      rawPlatform,
+      platformLink: rawPlatformLink,
+      link: typeof it.link === 'string' ? it.link.trim() : undefined,
+      email: rawEmail,
+      facebook: rawFb,
+      instagram: rawIg,
+      rawDetails: it,
+    });
+    const platform = routing.platform;
 
     const rawCity = String(
       it.city ||
@@ -274,7 +588,7 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       id: `inbox-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 8)}`,
       name: name || 'Qualified Prospect',
       platform,
-      rawPlatform,
+      rawPlatform: rawPlatform || undefined,
       profileLink: rawPlatformLink,
       platformLink: rawPlatformLink,
       instagram: rawIg || undefined,
@@ -284,7 +598,7 @@ export function parseQualifiedLeadsJson(jsonText: string): InboxLead[] {
       location: rawCity || undefined,
       prompt,
       uploadedAt: nowIso,
-      rawDetails: it,
+      rawDetails: compactRawDetails(it),
     });
   }
 
@@ -314,12 +628,7 @@ export function acceptInboxLeadIntoCrm(
   isDuplicate?: boolean;
   duplicateReason?: string;
 } {
-  let targetChannel: MultiChannelType = 'instagram';
-  if (lead.platform === 'Facebook' || lead.platform === 'Email') {
-    targetChannel = 'combined';
-  } else {
-    targetChannel = 'instagram';
-  }
+  const targetChannel: MultiChannelType = resolveInboxLeadRouting(lead).targetChannel;
 
   // Load existing leads for this channel if not provided
   const currentLeads = existingChannelLeads?.[targetChannel] ?? loadChannelLeads(targetChannel);
@@ -410,7 +719,7 @@ export function acceptInboxLeadIntoCrm(
     lead.rawDetails?.emailAddress ||
     lead.rawDetails?.contactEmail ||
     lead.rawDetails?.socialLinks?.email ||
-    (rawPlatformLink.includes('@') && !rawPlatformLink.includes('facebook.com') && !rawPlatformLink.includes('instagram.com') ? rawPlatformLink : undefined);
+    (isEmailAddressLink(rawPlatformLink) ? stripMailtoPrefix(rawPlatformLink) : undefined);
 
   const emailOnly = !hasSocialWarmupLink({
     channel: targetChannel,
@@ -455,7 +764,7 @@ export function acceptInboxLeadIntoCrm(
     breakupDM_Day14: '',
     breakupDM_Day30: '',
     isSequenceConfigured: false,
-    rawDetails: lead.rawDetails,
+    rawDetails: compactRawDetails(lead.rawDetails),
   };
 
   // Prepend new lead at index 0, resequence sort order, and recalculate ALL voice types strictly by ID
@@ -511,12 +820,7 @@ export function acceptAllInboxLeadsIntoCrm(
   const nowIso = new Date().toISOString();
 
   for (const lead of leadsToAccept) {
-    let targetChannel: MultiChannelType = 'instagram';
-    if (lead.platform === 'Facebook' || lead.platform === 'Email') {
-      targetChannel = 'combined';
-    } else {
-      targetChannel = 'instagram';
-    }
+    const targetChannel: MultiChannelType = resolveInboxLeadRouting(lead).targetChannel;
 
     const currentTargetList = targetChannel === 'combined' ? combinedList : instagramList;
 
@@ -590,7 +894,7 @@ export function acceptAllInboxLeadsIntoCrm(
       lead.rawDetails?.emailAddress ||
       lead.rawDetails?.contactEmail ||
       lead.rawDetails?.socialLinks?.email ||
-      (rawPlatformLink.includes('@') && !rawPlatformLink.includes('facebook.com') && !rawPlatformLink.includes('instagram.com') ? rawPlatformLink : undefined);
+      (isEmailAddressLink(rawPlatformLink) ? stripMailtoPrefix(rawPlatformLink) : undefined);
 
     const emailOnly = !hasSocialWarmupLink({
       channel: targetChannel,
@@ -633,7 +937,7 @@ export function acceptAllInboxLeadsIntoCrm(
       breakupDM_Day14: '',
       breakupDM_Day30: '',
       isSequenceConfigured: false,
-      rawDetails: lead.rawDetails,
+      rawDetails: compactRawDetails(lead.rawDetails),
     };
 
     if (targetChannel === 'combined') {

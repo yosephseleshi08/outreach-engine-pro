@@ -29,6 +29,8 @@ import {
   acceptAllInboxLeadsIntoCrm,
   removeInboxLead,
   clearAllInboxLeads,
+  hydrateInboxLeadsFromIdb,
+  resolveInboxLeadRouting,
 } from '../utils/inboxStorage';
 import { getPlatformLink } from '../utils/channelStorage';
 import { findNormalizedDuplicateMatches } from '../utils/leadLifecycle';
@@ -71,14 +73,21 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync state when storage changes across tabs or windows
+  // Sync state when storage changes across tabs or windows + hydrate from IndexedDB if compacted
   useEffect(() => {
+    let cancelled = false;
+    void hydrateInboxLeadsFromIdb().then((restored) => {
+      if (!cancelled && restored) {
+        setInboxLeads(restored);
+      }
+    });
     const handleInboxChange = () => {
       setInboxLeads(loadInboxLeads());
     };
     window.addEventListener('inbox_leads_changed', handleInboxChange);
     window.addEventListener('storage', handleInboxChange);
     return () => {
+      cancelled = true;
       window.removeEventListener('inbox_leads_changed', handleInboxChange);
       window.removeEventListener('storage', handleInboxChange);
     };
@@ -467,7 +476,8 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
                 <div className="grid grid-cols-1 gap-3.5">
                   {inboxLeads.map((lead, index) => {
                     const displayLink = lead.platformLink || lead.profileLink || '';
-                    const resolvedHref = getPlatformLink(displayLink, lead.platform);
+                    const resolvedPlatform = resolveInboxLeadRouting(lead).platform;
+                    const resolvedHref = getPlatformLink(displayLink, resolvedPlatform);
                     const isMail = resolvedHref.startsWith('mailto:');
                     const leadCity =
                       lead.city ||
@@ -509,7 +519,7 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
                             <h2 className="text-base sm:text-lg font-bold text-white font-['Outfit'] tracking-tight truncate">
                               {lead.name}
                             </h2>
-                            {getPlatformBadge(lead.platform, lead.rawPlatform)}
+                            {getPlatformBadge(resolvedPlatform, resolvedPlatform)}
                             {dupCheck.hasMatch && (
                               <span
                                 className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/40"
@@ -542,7 +552,7 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
                                 <span className="truncate">{displayLink}</span>
                                 <ExternalLink className="w-3.5 h-3.5 shrink-0 opacity-70 group-hover/link:opacity-100" />
                               </a>
-                              <TestLinkButton url={displayLink} platform={lead.platform} />
+                              <TestLinkButton url={displayLink} platform={resolvedPlatform} />
                               <button
                                 type="button"
                                 onClick={() => handleCopyLink(lead.id, displayLink)}

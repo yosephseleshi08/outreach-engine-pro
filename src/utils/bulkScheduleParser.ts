@@ -1,525 +1,796 @@
+import * as XLSX from 'xlsx';
 import { ChannelLead } from '../types';
 import {
-  addCadenceDays,
+  calculateCadenceFollowupDates,
   getLocalTodayStr,
   isEmailOnlyLead,
   normalizeToLocalDateStr,
-  toCleanDateStr,
 } from './cadenceEngine';
 
-export interface BulkScheduleMismatchError {
-  rowNumber: number;
-  leadId: string;
-  uploadedName: string;
-  expectedName: string;
-  attemptedDate: string;
-  message: string;
-}
-
-export interface BulkScheduleResult {
-  updatedLeads: ChannelLead[];
-  scheduledCount: number;
-  mismatchErrors: BulkScheduleMismatchError[];
-  notFoundCount: number;
-  notFoundIds: string[];
-  invalidDateCount: number;
-  summaryToast: string;
-  hasMismatches: boolean;
-}
-
 export interface ParsedScheduleRow {
-  rowNumber: number;
-  leadId: string;
-  leadName: string;
-  rawDate: unknown;
+  rowIndex: number;
+  rawId?: string;
+  rawName?: string;
+  day0: string | null;
+  day4: string | null;
+  day8: string | null;
+  day14: string | null;
 }
 
-/**
- * Case-insensitive normalization collapsing extra spaces for strict Lead Name comparison.
- */
-export function normalizeLeadNameForMatch(name: unknown): string {
-  return String(name ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
+export interface DetectedColumnMap {
+  headerRowIndex: number; // -1 if headerless
+  idCol: number;
+  nameCol: number;
+  day0Col: number;
+  day4Col: number;
+  day8Col: number;
+  day14Col: number;
 }
 
-function normalizeHeader(header: unknown): string {
-  return String(header ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
+export interface BulkSchedulePreviewRow {
+  parsed: ParsedScheduleRow;
+  matchedLead: ChannelLead | null;
+  matchMethod: 'id' | 'name' | 'unmatched';
+  updatedPreview: ChannelLead | null;
 }
 
-function isLeadIdHeader(h: string): boolean {
-  return (
-    h === 'lead id' ||
-    h === 'lead_id' ||
-    h === 'leadid' ||
-    h === 'id'
-  );
+export interface ParsedWorkbookData {
+  sheetNames: string[];
+  sheets: Record<string, unknown[][]>;
+  defaultSheet: string;
 }
 
-function isLeadNameHeader(h: string): boolean {
-  return (
-    h === 'lead name' ||
-    h === 'lead_name' ||
-    h === 'leadname' ||
-    h === 'prospect name' ||
-    h === 'prospect_name' ||
-    h === 'prospectname' ||
-    h === 'business name' ||
-    h === 'business_name' ||
-    h === 'restaurant name' ||
-    h === 'restaurant_name' ||
-    h === 'name'
-  );
-}
+const MONTH_NAME_MAP: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
 
-/**
- * Strictly matches ONLY the Day 0 column header.
- * Ignores "Scheduled Date", "Day 4", "Day 8", "Day 14", etc.
- */
-function isDay0Header(h: string): boolean {
-  return (
-    h === 'day 0' ||
-    h === 'day0' ||
-    h === 'day_0' ||
-    h === 'day-0' ||
-    h === 'd0'
-  );
-}
-
-function excelSerialToDateStr(serial: number): string | null {
-  if (!Number.isFinite(serial) || serial <= 10000 || serial >= 100000) {
+function formatYmd(year: number, month: number, day: number): string | null {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    year < 1990 ||
+    year > 2100 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
     return null;
   }
-  const wholeDays = Math.floor(serial);
-  const adjustedDays = wholeDays > 60 ? wholeDays : wholeDays + 1;
-  const utcMs = Date.UTC(1899, 11, 30) + adjustedDays * 86400000;
-  const d = new Date(utcMs);
-  const yyyy = String(d.getUTCFullYear()).padStart(4, '0');
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 /**
- * Parses an Excel date serial, Date object, or string (including "2026-11-11 00:00:00")
- * into clean YYYY-MM-DD local date format by stripping any time component.
+ * Parses any Excel serial date number, Date object, or string date directly into an exact
+ * YYYY-MM-DD calendar string with zero timezone shift and zero Cadence Engine recalculation.
  */
-export function parseScheduleDateValue(rawValue: unknown): string | null {
-  if (rawValue === null || rawValue === undefined || rawValue === '') {
+export function parseSpreadsheetDateCell(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    // Excel serial dates for 1990..2100 fall between ~32874 and ~73415
+    if (raw >= 20000 && raw <= 90000) {
+      const dc = XLSX.SSF.parse_date_code(raw);
+      if (dc && dc.y && dc.m && dc.d) {
+        return formatYmd(dc.y, dc.m, dc.d);
+      }
+    }
     return null;
   }
 
-  // Excel serial date number (e.g. 46337 or 46337.5) -> exact calendar YYYY-MM-DD
-  if (typeof rawValue === 'number') {
-    return excelSerialToDateStr(rawValue);
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) return null;
+    return formatYmd(raw.getFullYear(), raw.getMonth() + 1, raw.getDate());
   }
 
-  if (rawValue instanceof Date) {
-    return normalizeToLocalDateStr(rawValue);
-  }
-
-  const str = String(rawValue).trim();
+  const str = String(raw).trim();
   if (!str) return null;
 
-  // Stringified Excel serial number (e.g. "46337" or "46337.0")
-  if (/^\d{5}(?:\.\d+)?$/.test(str)) {
-    const parsedSerial = excelSerialToDateStr(Number(str));
-    if (parsedSerial) return parsedSerial;
+  const lower = str.toLowerCase();
+  if (['-', '--', 'n/a', 'na', 'none', 'null', 'undefined', 'tbd'].includes(lower)) {
+    return null;
   }
 
-  // Handle formatted weekday strings like "Wed, Nov 24, 2026"
-  const withoutWeekday = str.replace(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+/i, '').trim();
+  // Exact YYYY-MM-DD or ISO timestamp ("2026-11-27T00:00:00.000Z" -> "2026-11-27")
+  const isoCandidate = str.includes('T') ? str.split('T')[0].trim() : str;
+  const isoExact = isoCandidate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoExact) {
+    return formatYmd(Number(isoExact[1]), Number(isoExact[2]), Number(isoExact[3]));
+  }
 
-  // Strip trailing time components (e.g., "2026-11-11 00:00:00", "11/11/2026 00:00:00", "2026-11-11T00:00:00.000Z")
-  const strippedTime = withoutWeekday
-    .replace(/T.*$/i, '')
-    .replace(/\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?(?:\s*UTC|[+-]\d{2}:?\d{2})?$/i, '')
-    .trim();
+  // YYYY-MM-DD HH:mm:ss or YYYY/M/D or YYYY.M.D
+  const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s.*)?$/);
+  if (ymdMatch) {
+    return formatYmd(Number(ymdMatch[1]), Number(ymdMatch[2]), Number(ymdMatch[3]));
+  }
 
-  const clean =
-    toCleanDateStr(strippedTime) ||
-    normalizeToLocalDateStr(strippedTime) ||
-    toCleanDateStr(withoutWeekday) ||
-    normalizeToLocalDateStr(withoutWeekday) ||
-    normalizeToLocalDateStr(str);
+  // MM/DD/YYYY or DD/MM/YYYY (4-digit year)
+  const slash4Match = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:\s.*)?$/);
+  if (slash4Match) {
+    const a = Number(slash4Match[1]);
+    const b = Number(slash4Match[2]);
+    const y = Number(slash4Match[3]);
+    if (a > 12 && b <= 12) {
+      return formatYmd(y, b, a);
+    }
+    return formatYmd(y, a, b);
+  }
 
-  return clean && /^\d{4}-\d{2}-\d{2}$/.test(clean) ? clean : null;
+  // M/D/YY or M-D-YY (2-digit year)
+  const slash2Match = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})(?:\s.*)?$/);
+  if (slash2Match) {
+    const a = Number(slash2Match[1]);
+    const b = Number(slash2Match[2]);
+    const yy = Number(slash2Match[3]);
+    const y = yy < 70 ? 2000 + yy : 1900 + yy;
+    if (a > 12 && b <= 12) {
+      return formatYmd(y, b, a);
+    }
+    return formatYmd(y, a, b);
+  }
+
+  // Textual month formats: "Nov 27, 2026", "Fri, Nov 27, 2026", "27-Nov-2026", "27 Nov 2026"
+  const monthFirstMatch = str.match(
+    /(?:^[a-z]{3,9},?\s+)?([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/i
+  );
+  if (monthFirstMatch) {
+    const m = MONTH_NAME_MAP[monthFirstMatch[1].toLowerCase()];
+    const d = Number(monthFirstMatch[2]);
+    const y = Number(monthFirstMatch[3]);
+    if (m) return formatYmd(y, m, d);
+  }
+
+  const dayFirstMatch = str.match(
+    /^(\d{1,2})[-\s]+([a-z]{3,9})[-\s,]+(\d{4})/i
+  );
+  if (dayFirstMatch) {
+    const d = Number(dayFirstMatch[1]);
+    const m = MONTH_NAME_MAP[dayFirstMatch[2].toLowerCase()];
+    const y = Number(dayFirstMatch[3]);
+    if (m) return formatYmd(y, m, d);
+  }
+
+  return normalizeToLocalDateStr(str);
 }
 
 /**
- * Extracts normalized schedule rows from a 2D spreadsheet matrix.
- * Requires Lead ID, Lead Name (or PROSPECT NAME), and ONLY the Day 0 column.
- * Any Day 4 / Day 8 / Day 14 columns in the spreadsheet are ignored.
+ * Extracts raw 2D grid from an Excel workbook buffer, reading raw cell values (`v`) so
+ * Excel serial numbers & cached formula outputs (like WORKDAY.INTL) convert directly to exact YYYY-MM-DD.
  */
-export function extractScheduleRowsFromMatrix(matrix: unknown[][]): ParsedScheduleRow[] {
-  if (!Array.isArray(matrix) || matrix.length === 0) {
-    throw new Error('The uploaded spreadsheet is empty.');
-  }
+export function parseWorkbookBuffer(buffer: ArrayBuffer): ParsedWorkbookData {
+  const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
+  const sheets: Record<string, unknown[][]> = {};
 
-  let headerRowIndex = -1;
-  let idCol = -1;
-  let nameCol = -1;
-  let day0Col = -1;
-
-  let fallbackHeaderRowIndex = -1;
-  let fallbackIdCol = -1;
-  let fallbackNameCol = -1;
-  let fallbackDay0Col = -1;
-
-  const scanLimit = Math.min(matrix.length, 10);
-  for (let r = 0; r < scanLimit; r++) {
-    const row = matrix[r];
-    if (!Array.isArray(row)) continue;
-
-    let foundId = -1;
-    let foundName = -1;
-    let foundDay0 = -1;
-
-    for (let c = 0; c < row.length; c++) {
-      const h = normalizeHeader(row[c]);
-      if (!h) continue;
-      if (foundId === -1 && isLeadIdHeader(h)) foundId = c;
-      else if (foundName === -1 && isLeadNameHeader(h)) foundName = c;
-      else if (foundDay0 === -1 && isDay0Header(h)) foundDay0 = c;
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    if (!ws || !ws['!ref']) {
+      sheets[name] = [];
+      continue;
     }
 
-    if (foundId !== -1 && foundName !== -1 && foundDay0 !== -1) {
-      headerRowIndex = r;
-      idCol = foundId;
-      nameCol = foundName;
-      day0Col = foundDay0;
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const grid: unknown[][] = [];
+
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      const row: unknown[] = [];
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const addr = XLSX.utils.encode_cell({ r, c });
+        const cell = ws[addr];
+        if (!cell) {
+          row.push('');
+        } else if (cell.t === 'n' && typeof cell.v === 'number') {
+          // Preserve serial date number directly for exact calendar conversion
+          row.push(cell.v);
+        } else if (cell.t === 'd' && cell.v instanceof Date) {
+          row.push(cell.v);
+        } else if (cell.v !== undefined && cell.v !== null && cell.v !== '') {
+          row.push(cell.v);
+        } else {
+          row.push(cell.w ?? '');
+        }
+      }
+      grid.push(row);
+    }
+
+    sheets[name] = grid;
+  }
+
+  let defaultSheet = wb.SheetNames[0] || '';
+  for (const name of wb.SheetNames) {
+    const rows = sheets[name];
+    if (!rows || rows.length === 0) continue;
+    const cols = detectScheduleColumns(rows);
+    if (
+      cols.day0Col !== -1 ||
+      cols.day4Col !== -1 ||
+      cols.day8Col !== -1 ||
+      cols.day14Col !== -1
+    ) {
+      defaultSheet = name;
       break;
     }
+  }
 
-    if (
-      fallbackHeaderRowIndex === -1 &&
-      foundId !== -1 &&
-      (foundName !== -1 || foundDay0 !== -1)
-    ) {
-      fallbackHeaderRowIndex = r;
-      fallbackIdCol = foundId;
-      fallbackNameCol = foundName;
-      fallbackDay0Col = foundDay0;
+  return {
+    sheetNames: wb.SheetNames,
+    sheets,
+    defaultSheet,
+  };
+}
+
+/**
+ * Parses CSV / TSV / Excel copy-pasted text into a 2D array.
+ */
+export function parseDelimitedScheduleText(text: string): unknown[][] {
+  const trimmed = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!trimmed) return [];
+
+  const lines = trimmed.split('\n').filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return [];
+
+  // Prefer tab delimiter when pasted straight from Excel / Google Sheets
+  const firstSample = lines.slice(0, 5).join('\n');
+  const delimiter = firstSample.includes('\t')
+    ? '\t'
+    : firstSample.includes(';') && !firstSample.includes(',')
+    ? ';'
+    : ',';
+
+  const parseLine = (line: string): string[] => {
+    if (delimiter === '\t') {
+      return line.split('\t').map((cell) => cell.trim());
+    }
+    const cells: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === delimiter && !inQuotes) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    cells.push(current.trim());
+    return cells;
+  };
+
+  return lines.map(parseLine);
+}
+
+function normalizeHeaderToken(val: unknown): string {
+  return String(val ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_\-:()./]+/g, '');
+}
+
+type HeaderRole = 'id' | 'name' | 'day0' | 'day4' | 'day8' | 'day14';
+
+function classifyHeaderCell(val: unknown): HeaderRole | null {
+  const rawLower = String(val ?? '').trim().toLowerCase();
+  const token = normalizeHeaderToken(val);
+  if (!token) return null;
+
+  // Lead ID
+  if (
+    token === 'id' ||
+    token === 'leadid' ||
+    token === 'crmid' ||
+    token === 'leadcode' ||
+    token === 'code' ||
+    token === '#'
+  ) {
+    return 'id';
+  }
+
+  // Lead / Prospect Name
+  if (
+    token === 'name' ||
+    token === 'leadname' ||
+    token === 'prospect' ||
+    token === 'prospectname' ||
+    token === 'restaurant' ||
+    token === 'restaurantname' ||
+    token === 'business' ||
+    token === 'businessname' ||
+    token === 'company' ||
+    token === 'lead'
+  ) {
+    return 'name';
+  }
+
+  // Exact Day 14 (check before Day 4 / Day 1 to avoid prefix collisions)
+  if (
+    token === 'day14' ||
+    token === 'day14date' ||
+    token === 'd14' ||
+    token === 'd14date' ||
+    token === 'followup3' ||
+    token === 'followup3date' ||
+    token === 'fu3' ||
+    token === 'f3' ||
+    token === 'breakup' ||
+    token === 'breakupdate' ||
+    token === 'day14breakup' ||
+    /^day\s*14\b/.test(rawLower) ||
+    /^d14\b/.test(rawLower)
+  ) {
+    return 'day14';
+  }
+
+  // Exact Day 8
+  if (
+    token === 'day8' ||
+    token === 'day8date' ||
+    token === 'd8' ||
+    token === 'd8date' ||
+    token === 'followup2' ||
+    token === 'followup2date' ||
+    token === 'fu2' ||
+    token === 'f2' ||
+    token === 'day8followup' ||
+    /^day\s*8\b/.test(rawLower) ||
+    /^d8\b/.test(rawLower)
+  ) {
+    return 'day8';
+  }
+
+  // Exact Day 4
+  if (
+    token === 'day4' ||
+    token === 'day4date' ||
+    token === 'd4' ||
+    token === 'd4date' ||
+    token === 'followup1' ||
+    token === 'followup1date' ||
+    token === 'fu1' ||
+    token === 'f1' ||
+    token === 'day4followup' ||
+    /^day\s*4\b/.test(rawLower) ||
+    /^d4\b/.test(rawLower)
+  ) {
+    return 'day4';
+  }
+
+  // Exact Day 0
+  if (
+    token === 'day0' ||
+    token === 'day0date' ||
+    token === 'd0' ||
+    token === 'd0date' ||
+    token === 'initial' ||
+    token === 'initialdate' ||
+    token === 'initialsent' ||
+    token === 'initialsentdate' ||
+    token === 'scheduleddate' ||
+    token === 'scheduled' ||
+    token === 'startdate' ||
+    token === 'day0initial' ||
+    /^day\s*0\b/.test(rawLower) ||
+    /^d0\b/.test(rawLower)
+  ) {
+    return 'day0';
+  }
+
+  return null;
+}
+
+/**
+ * Scans top rows for explicit column headers (`Lead ID`, `Name`, `Day 0`, `Day 4`, `Day 8`, `Day 14`).
+ * Falls back to positional detection if pasted data has no header row.
+ */
+export function detectScheduleColumns(rows: unknown[][]): DetectedColumnMap {
+  let bestRowIndex = -1;
+  let bestScore = 0;
+  let bestMap: DetectedColumnMap = {
+    headerRowIndex: -1,
+    idCol: -1,
+    nameCol: -1,
+    day0Col: -1,
+    day4Col: -1,
+    day8Col: -1,
+    day14Col: -1,
+  };
+
+  const scanLimit = Math.min(rows.length, 15);
+  for (let r = 0; r < scanLimit; r++) {
+    const row = rows[r];
+    if (!Array.isArray(row) || row.length === 0) continue;
+
+    const candidate: DetectedColumnMap = {
+      headerRowIndex: r,
+      idCol: -1,
+      nameCol: -1,
+      day0Col: -1,
+      day4Col: -1,
+      day8Col: -1,
+      day14Col: -1,
+    };
+
+    let dateHeaderHits = 0;
+    let totalHits = 0;
+
+    for (let c = 0; c < row.length; c++) {
+      const role = classifyHeaderCell(row[c]);
+      if (!role) continue;
+      if (role === 'id' && candidate.idCol === -1) {
+        candidate.idCol = c;
+        totalHits++;
+      } else if (role === 'name' && candidate.nameCol === -1) {
+        candidate.nameCol = c;
+        totalHits++;
+      } else if (role === 'day0' && candidate.day0Col === -1) {
+        candidate.day0Col = c;
+        dateHeaderHits++;
+        totalHits++;
+      } else if (role === 'day4' && candidate.day4Col === -1) {
+        candidate.day4Col = c;
+        dateHeaderHits++;
+        totalHits++;
+      } else if (role === 'day8' && candidate.day8Col === -1) {
+        candidate.day8Col = c;
+        dateHeaderHits++;
+        totalHits++;
+      } else if (role === 'day14' && candidate.day14Col === -1) {
+        candidate.day14Col = c;
+        dateHeaderHits++;
+        totalHits++;
+      }
+    }
+
+    const score = dateHeaderHits * 3 + totalHits;
+    if (dateHeaderHits >= 1 && score > bestScore) {
+      bestScore = score;
+      bestRowIndex = r;
+      bestMap = candidate;
     }
   }
 
-  if (headerRowIndex === -1 && fallbackHeaderRowIndex !== -1) {
-    headerRowIndex = fallbackHeaderRowIndex;
-    idCol = fallbackIdCol;
-    nameCol = fallbackNameCol;
-    day0Col = fallbackDay0Col;
+  if (bestRowIndex !== -1) {
+    return bestMap;
   }
 
-  if (headerRowIndex === -1 || idCol === -1) {
-    throw new Error(
-      'Missing required "Lead ID" column header. Include columns: Lead ID, Lead Name (or PROSPECT NAME), Day 0.'
-    );
-  }
-  if (nameCol === -1) {
-    throw new Error(
-      'Missing required "Lead Name" (or "PROSPECT NAME") column header for safety verification.'
-    );
-  }
-  if (day0Col === -1) {
-    throw new Error(
-      'Missing required "Day 0" column header. Upload a spreadsheet with Lead ID, Lead Name (or PROSPECT NAME), and Day 0.'
-    );
+  // Fallback: Headerless rows (detect ID column + up to 4 date columns in order)
+  const firstDataRow = rows.find((r) => Array.isArray(r) && r.some((cell) => String(cell ?? '').trim() !== ''));
+  if (!firstDataRow) return bestMap;
+
+  const dateCols: number[] = [];
+  let idCol = -1;
+  let nameCol = -1;
+
+  for (let c = 0; c < firstDataRow.length; c++) {
+    const val = firstDataRow[c];
+    const parsedDate = parseSpreadsheetDateCell(val);
+    if (parsedDate) {
+      dateCols.push(c);
+      continue;
+    }
+    const str = String(val ?? '').trim();
+    if (!str) continue;
+    if (idCol === -1 && /^(?:ig|cm|fb|em)-?\d+$/i.test(str)) {
+      idCol = c;
+    } else if (nameCol === -1) {
+      nameCol = c;
+    }
   }
 
-  const rows: ParsedScheduleRow[] = [];
-  for (let r = headerRowIndex + 1; r < matrix.length; r++) {
-    const row = matrix[r];
+  if (idCol === -1 && nameCol !== -1) {
+    idCol = nameCol;
+    nameCol = -1;
+  }
+
+  return {
+    headerRowIndex: -1,
+    idCol,
+    nameCol,
+    day0Col: dateCols[0] ?? -1,
+    day4Col: dateCols[1] ?? -1,
+    day8Col: dateCols[2] ?? -1,
+    day14Col: dateCols[3] ?? -1,
+  };
+}
+
+export function extractScheduleRows(
+  rows: unknown[][],
+  colMap: DetectedColumnMap
+): ParsedScheduleRow[] {
+  const startRow = colMap.headerRowIndex >= 0 ? colMap.headerRowIndex + 1 : 0;
+  const result: ParsedScheduleRow[] = [];
+
+  for (let r = startRow; r < rows.length; r++) {
+    const row = rows[r];
     if (!Array.isArray(row)) continue;
 
-    const rawId = String(row[idCol] ?? '').trim();
-    const rawName = String(row[nameCol] ?? '').trim();
-    const rawDate = row[day0Col];
+    const rawId = colMap.idCol >= 0 ? String(row[colMap.idCol] ?? '').trim() : undefined;
+    const rawName = colMap.nameCol >= 0 ? String(row[colMap.nameCol] ?? '').trim() : undefined;
 
-    const hasDate = rawDate !== null && rawDate !== undefined && String(rawDate).trim() !== '';
-    if (!rawId && !rawName && !hasDate) continue;
-    if (!rawId) continue;
+    const day0 = colMap.day0Col >= 0 ? parseSpreadsheetDateCell(row[colMap.day0Col]) : null;
+    const day4 = colMap.day4Col >= 0 ? parseSpreadsheetDateCell(row[colMap.day4Col]) : null;
+    const day8 = colMap.day8Col >= 0 ? parseSpreadsheetDateCell(row[colMap.day8Col]) : null;
+    const day14 = colMap.day14Col >= 0 ? parseSpreadsheetDateCell(row[colMap.day14Col]) : null;
 
-    rows.push({
-      rowNumber: r + 1,
-      leadId: rawId,
-      leadName: rawName,
-      rawDate,
+    if (!rawId && !rawName) continue;
+    if (!day0 && !day4 && !day8 && !day14) continue;
+
+    result.push({
+      rowIndex: r + 1,
+      rawId: rawId || undefined,
+      rawName: rawName || undefined,
+      day0,
+      day4,
+      day8,
+      day14,
     });
   }
 
-  return rows;
+  return result;
 }
 
-/**
- * Parses an Excel (.xlsx/.xls) or CSV/TSV File into schedule rows.
- */
-export async function parseScheduleFile(file: File): Promise<ParsedScheduleRow[]> {
-  const lowerName = file.name.toLowerCase();
-  if (lowerName.endsWith('.csv') || lowerName.endsWith('.tsv') || lowerName.endsWith('.txt')) {
-    const text = await file.text();
-    return parseScheduleText(text);
-  }
-
-  const XLSX = await import('xlsx');
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
-  const firstSheetName = workbook.SheetNames[0];
-  if (!firstSheetName) {
-    throw new Error('No worksheets found in the uploaded file.');
-  }
-  const sheet = workbook.Sheets[firstSheetName];
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-    header: 1,
-    raw: true,
-    defval: '',
-  });
-  return extractScheduleRowsFromMatrix(matrix);
+function normalizeLookupText(val?: string): string {
+  return (val || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function parseDelimitedLine(line: string, delimiter: string): string[] {
-  const cells: string[] = [];
-  let current = '';
-  let inQuotes = false;
+function findMatchingLead(
+  row: ParsedScheduleRow,
+  byNormalizedId: Map<string, ChannelLead>,
+  byNumericId: Map<number, ChannelLead>,
+  byNormalizedName: Map<string, ChannelLead>
+): { lead: ChannelLead | null; method: 'id' | 'name' | 'unmatched' } {
+  if (row.rawId) {
+    const idNorm = row.rawId.trim().toLowerCase();
+    const direct = byNormalizedId.get(idNorm);
+    if (direct) return { lead: direct, method: 'id' };
 
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
+    // Also accept compact ID without hyphen (e.g. "IG36" -> "ig-36") or bare numeric ID ("36")
+    const compact = idNorm.replace(/[\s_-]+/g, '');
+    for (const [key, candidate] of byNormalizedId.entries()) {
+      if (key.replace(/[\s_-]+/g, '') === compact) {
+        return { lead: candidate, method: 'id' };
       }
-    } else if (ch === delimiter && !inQuotes) {
-      cells.push(current.trim());
-      current = '';
-    } else {
-      current += ch;
     }
+
+    if (/^\d+$/.test(idNorm)) {
+      const numMatch = byNumericId.get(parseInt(idNorm, 10));
+      if (numMatch) return { lead: numMatch, method: 'id' };
+    }
+
+    // Fallback: what if ID column actually holds the lead name?
+    const nameViaIdCol = byNormalizedName.get(normalizeLookupText(row.rawId));
+    if (nameViaIdCol) return { lead: nameViaIdCol, method: 'name' };
   }
-  cells.push(current.trim());
-  return cells;
+
+  if (row.rawName) {
+    const byName = byNormalizedName.get(normalizeLookupText(row.rawName));
+    if (byName) return { lead: byName, method: 'name' };
+  }
+
+  return { lead: null, method: 'unmatched' };
 }
 
 /**
- * Parses pasted CSV or tab-delimited text into schedule rows.
+ * Applies exact Day 0, Day 4, Day 8, and Day 14 dates from a parsed row onto a ChannelLead
+ * WITHOUT running Cadence Engine recalculation or Sunday-shifting.
  */
-export function parseScheduleText(text: string): ParsedScheduleRow[] {
-  const trimmed = text.replace(/^\uFEFF/, '').trim();
-  if (!trimmed) {
-    throw new Error('Please provide spreadsheet rows to import.');
-  }
-  const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length === 0) {
-    throw new Error('Could not parse spreadsheet rows.');
-  }
-  const delimiter = lines[0].includes('\t') ? '\t' : ',';
-  const matrix = lines.map((line) => parseDelimitedLine(line, delimiter));
-  return extractScheduleRowsFromMatrix(matrix);
-}
-
-/**
- * Shared single-lead date assignment rule matching manual Schedule editing:
- * - Past dates write to initialSentDate and generate D4/D8/D14 follow-ups
- * - Today/future dates write to scheduledDate
- * - Empty date clears scheduledDate (and resets unsent cadence if no followup history)
- */
-export function applyScheduledDateToLead(
+export function applyExactScheduleDatesToLead(
   lead: ChannelLead,
-  normalizedDate: string | null,
+  row: ParsedScheduleRow,
   todayStr = getLocalTodayStr()
 ): ChannelLead {
   const emailOnly = isEmailOnlyLead(lead);
 
-  if (!normalizedDate) {
-    const hasRecordedFollowups = Boolean(
-      lead.followup1SentDate || lead.followup2SentDate || lead.followup3SentDate || lead.repliedAt
-    );
-    if (hasRecordedFollowups) {
-      return {
-        ...lead,
-        scheduledDate: undefined,
-        dismissedDate: undefined,
-      };
-    }
+  if (!row.day0) {
     return {
       ...lead,
-      scheduledDate: undefined,
-      initialSentDate: undefined,
-      dispatchDate: undefined,
-      dmSent: false,
-      status: undefined,
-      followup1Date: undefined,
-      followup2Date: undefined,
-      followup3Date: undefined,
-      followupCount: 0,
-      leadStatus: 'not_sent' as const,
-      cadenceStatus: undefined,
-      isCompleted: false,
-      warmupStatus: emailOnly ? ('warmed' as const) : undefined,
-      isWarmedUp: emailOnly ? true : false,
+      followup1Date: row.day4 ?? lead.followup1Date,
+      followup2Date: row.day8 ?? lead.followup2Date,
+      followup3Date: row.day14 ?? lead.followup3Date,
       dismissedDate: undefined,
     };
   }
 
-  // Past date -> Save as initialSentDate so Cadence Engine calculates Day 4 / 8 / 14 from Day 0
-  if (normalizedDate < todayStr) {
+  const day0 = row.day0;
+  const recalculated = calculateCadenceFollowupDates(day0);
+
+  // Use explicit spreadsheet follow-up columns if present; otherwise recalculate from new Day 0
+  // (4, 8, and 14 working days skipping Sundays and Freeze Days) instead of keeping old stale dates.
+  const exactFu1 = row.day4 ?? recalculated.followup1Date;
+  const exactFu2 = row.day8 ?? recalculated.followup2Date;
+  const exactFu3 = row.day14 ?? recalculated.followup3Date;
+
+  // Past Day 0 -> already sent/dispatched in sequence, preserve exact followup1Date/2Date/3Date
+  if (day0 < todayStr) {
+    const preservedCompleted =
+      lead.cadenceStatus === 'completed' ||
+      lead.leadStatus === 'replied' ||
+      lead.leadStatus === 'completed' ||
+      lead.isCompleted;
+
     return {
       ...lead,
-      initialSentDate: normalizedDate,
-      dispatchDate: normalizedDate,
+      initialSentDate: day0,
+      dispatchDate: day0,
       dmSent: true,
-      status: 'dispatched' as const,
-      leadStatus: lead.isSeen ? ('seen' as const) : ('waiting_reply' as const),
-      cadenceStatus: 'running' as const,
-      isCompleted: false,
+      dispatchedAt: lead.dispatchedAt || `${day0}T12:00:00`,
+      dmSentAt: lead.dmSentAt || `${day0}T12:00:00`,
+      status: 'dispatched',
+      leadStatus:
+        lead.leadStatus === 'replied' || lead.leadStatus === 'completed'
+          ? lead.leadStatus
+          : lead.isSeen
+          ? 'seen'
+          : 'waiting_reply',
+      cadenceStatus:
+        lead.cadenceStatus === 'cancelled'
+          ? 'cancelled'
+          : preservedCompleted
+          ? 'completed'
+          : 'running',
+      isCompleted: Boolean(preservedCompleted),
       followupCount:
         typeof lead.followupCount === 'number' && !Number.isNaN(lead.followupCount)
           ? lead.followupCount
           : 0,
-      followup1Date: addCadenceDays(normalizedDate, 4),
-      followup2Date: addCadenceDays(normalizedDate, 8),
-      followup3Date: addCadenceDays(normalizedDate, 14),
-      warmupStatus: 'warmed' as const,
+      followup1Date: exactFu1,
+      followup2Date: exactFu2,
+      followup3Date: exactFu3,
+      warmupStatus: 'warmed',
       isWarmedUp: true,
-      warmedUpAt: lead.warmedUpAt || normalizedDate,
+      warmedUpAt: lead.warmedUpAt || day0,
       scheduledDate: undefined,
       dismissedDate: undefined,
     };
   }
 
-  // Today or future date -> Save as scheduledDate
+  // Day 0 === today and lead was already marked sent on that exact Day 0: keep sent state & store exact D4/D8/D14
   const existingInitial = normalizeToLocalDateStr(lead.initialSentDate);
-  const hasPastInitial = Boolean(existingInitial && existingInitial < todayStr);
-
-  if (hasPastInitial) {
+  if (day0 === todayStr && lead.dmSent && existingInitial === day0) {
     return {
       ...lead,
-      scheduledDate: normalizedDate,
-      warmupStatus: 'warmed' as const,
-      isWarmedUp: true,
+      followup1Date: exactFu1,
+      followup2Date: exactFu2,
+      followup3Date: exactFu3,
+      dismissedDate: undefined,
+    };
+  }
+
+  // Day 0 is today or future (unsent): assign exact scheduledDate + exact D4/D8/D14
+  const hasAnySentFollowup = Boolean(
+    lead.followup1SentDate || lead.followup2SentDate || lead.followup3SentDate
+  );
+
+  if (hasAnySentFollowup) {
+    return {
+      ...lead,
+      scheduledDate: day0,
+      followup1Date: exactFu1,
+      followup2Date: exactFu2,
+      followup3Date: exactFu3,
       dismissedDate: undefined,
     };
   }
 
   return {
     ...lead,
-    scheduledDate: normalizedDate,
-    warmupStatus: emailOnly
-      ? ('warmed' as const)
-      : (lead.warmupStatus || (lead.isWarmedUp ? 'warmed' : 'locked')),
+    scheduledDate: day0,
+    initialSentDate: undefined,
+    dispatchDate: undefined,
+    dmSent: false,
+    status: undefined,
+    followupCount: 0,
+    followup1Date: exactFu1,
+    followup2Date: exactFu2,
+    followup3Date: exactFu3,
+    leadStatus: 'not_sent',
+    cadenceStatus: lead.cadenceStatus === 'cancelled' ? 'cancelled' : undefined,
+    isCompleted: false,
+    warmupStatus: emailOnly ? 'warmed' : (lead.warmupStatus || (lead.isWarmedUp ? 'warmed' : 'locked')),
     isWarmedUp: emailOnly ? true : lead.isWarmedUp,
     dismissedDate: undefined,
   };
 }
 
-function findLeadByUploadedId(
+export function buildBulkSchedulePreview(
   leads: ChannelLead[],
-  rawLeadId: string
-): ChannelLead | undefined {
-  const trimmed = rawLeadId.trim();
-  if (!trimmed) return undefined;
+  parsedRows: ParsedScheduleRow[],
+  todayStr = getLocalTodayStr()
+): {
+  previewRows: BulkSchedulePreviewRow[];
+  updatedLeads: ChannelLead[];
+  matchedCount: number;
+  unmatchedCount: number;
+} {
+  const byNormalizedId = new Map<string, ChannelLead>();
+  const byNumericId = new Map<number, ChannelLead>();
+  const byNormalizedName = new Map<string, ChannelLead>();
 
-  const upper = trimmed.toUpperCase();
-  const exact = leads.find((l) => l.id.trim().toUpperCase() === upper);
-  if (exact) return exact;
-
-  // Fallback only when uploaded ID is purely numeric (e.g. "12" matching numericId 12)
-  if (/^\d+$/.test(trimmed)) {
-    const numeric = parseInt(trimmed, 10);
-    return leads.find((l) => l.numericId === numeric);
+  for (const lead of leads) {
+    byNormalizedId.set(String(lead.id || '').trim().toLowerCase(), lead);
+    if (typeof lead.numericId === 'number' && Number.isFinite(lead.numericId)) {
+      byNumericId.set(lead.numericId, lead);
+    } else {
+      const m = String(lead.id || '').match(/(\d+)$/);
+      if (m) byNumericId.set(parseInt(m[1], 10), lead);
+    }
+    if (lead.name) {
+      byNormalizedName.set(normalizeLookupText(lead.name), lead);
+    }
   }
 
-  return undefined;
-}
+  const updatesByLeadId = new Map<string, ChannelLead>();
+  const previewRows: BulkSchedulePreviewRow[] = [];
+  let matchedCount = 0;
+  let unmatchedCount = 0;
 
-/**
- * Validates BOTH Lead ID and Lead Name before assigning schedule dates.
- * - ID + Name match (case-insensitive, collapsed spaces): assigns date
- * - ID matches but Name differs: skips row and logs mismatch error
- * - ID not found: skips row
- */
-export function applyBulkScheduleWithValidation(
-  existingLeads: ChannelLead[],
-  rows: ParsedScheduleRow[],
-  todayStr = getLocalTodayStr()
-): BulkScheduleResult {
-  const mismatchErrors: BulkScheduleMismatchError[] = [];
-  const notFoundIds: string[] = [];
-  let scheduledCount = 0;
-  let invalidDateCount = 0;
-
-  // Map lead.id -> validated target date
-  const approvedUpdates = new Map<string, string>();
-
-  for (const row of rows) {
-    const matchedLead = findLeadByUploadedId(existingLeads, row.leadId);
-
-    // Rule 5: If the ID is not found -> Skip it
-    if (!matchedLead) {
-      notFoundIds.push(row.leadId);
-      continue;
-    }
-
-    const uploadedNormName = normalizeLeadNameForMatch(row.leadName);
-    const dbNormName = normalizeLeadNameForMatch(matchedLead.name);
-    const parsedDate = parseScheduleDateValue(row.rawDate);
-
-    // Rule 2 & 4: Verify Lead Name matches (case-insensitive, ignoring extra spaces)
-    if (!uploadedNormName || uploadedNormName !== dbNormName) {
-      const errorMsg = `Row ${row.rowNumber} (${matchedLead.id}): Name mismatch — Excel had "${row.leadName || '(empty)'}", CRM has "${matchedLead.name}".`;
-      console.error('[BulkScheduleUpload] Validation failed:', errorMsg);
-      mismatchErrors.push({
-        rowNumber: row.rowNumber,
-        leadId: matchedLead.id,
-        uploadedName: row.leadName || '(empty)',
-        expectedName: matchedLead.name,
-        attemptedDate: parsedDate || String(row.rawDate ?? ''),
-        message: errorMsg,
+  for (const parsed of parsedRows) {
+    const { lead, method } = findMatchingLead(
+      parsed,
+      byNormalizedId,
+      byNumericId,
+      byNormalizedName
+    );
+    if (!lead) {
+      unmatchedCount++;
+      previewRows.push({
+        parsed,
+        matchedLead: null,
+        matchMethod: 'unmatched',
+        updatedPreview: null,
       });
       continue;
     }
 
-    if (!parsedDate) {
-      invalidDateCount++;
-      continue;
-    }
+    const baseLead = updatesByLeadId.get(lead.id) || lead;
+    const nextLead = applyExactScheduleDatesToLead(baseLead, parsed, todayStr);
+    updatesByLeadId.set(lead.id, nextLead);
+    matchedCount++;
 
-    // Rule 3: Perfect ID + Name match -> Approve date assignment
-    approvedUpdates.set(matchedLead.id, parsedDate);
+    previewRows.push({
+      parsed,
+      matchedLead: lead,
+      matchMethod: method,
+      updatedPreview: nextLead,
+    });
   }
 
-  const updatedLeads = existingLeads.map((lead) => {
-    const nextDate = approvedUpdates.get(lead.id);
-    if (!nextDate) return lead;
-    scheduledCount++;
-    return applyScheduledDateToLead(lead, nextDate, todayStr);
-  });
-
-  const notFoundCount = notFoundIds.length;
-  const mismatchCount = mismatchErrors.length;
-
-  let summaryToast: string;
-  if (mismatchCount > 0) {
-    summaryToast = `${scheduledCount} ${scheduledCount === 1 ? 'lead' : 'leads'} scheduled. ${mismatchCount} failed because the name didn't match the ID.`;
-  } else if (notFoundCount > 0) {
-    summaryToast = `${scheduledCount} ${scheduledCount === 1 ? 'lead' : 'leads'} scheduled. ${notFoundCount} skipped (ID not found).`;
-  } else {
-    summaryToast = `${scheduledCount} ${scheduledCount === 1 ? 'lead' : 'leads'} scheduled successfully.`;
-  }
+  const updatedLeads = leads.map((lead) => updatesByLeadId.get(lead.id) || lead);
 
   return {
+    previewRows,
     updatedLeads,
-    scheduledCount,
-    mismatchErrors,
-    notFoundCount,
-    notFoundIds,
-    invalidDateCount,
-    summaryToast,
-    hasMismatches: mismatchCount > 0,
+    matchedCount,
+    unmatchedCount,
   };
 }

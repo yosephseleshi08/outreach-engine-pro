@@ -2,16 +2,12 @@ import { ChannelLead, MultiChannelType } from '../types';
 import { getStrictVoiceTypeForId } from './voiceTypeEngine';
 import { getLeadInstagram, getLeadFacebook } from './channelStorage';
 import {
+  isLocalSunday,
+  isDateFrozenDirect,
   shiftDueDateOffRestDay,
-  addCadenceDays,
-  subtractCadenceDays,
-  getCadenceDaysElapsed,
-  isCadenceRestDay,
 } from './leadLifecycle';
 import { appendDispatchEntry, resolveLeadDispatchChannel } from './dispatchLog';
 import { lockObligationOnFirstDispatch } from './dailyObligation';
-
-export { addCadenceDays, subtractCadenceDays, getCadenceDaysElapsed, isCadenceRestDay };
 
 /**
  * Returns today's date formatted as YYYY-MM-DD strictly in user's local timezone
@@ -140,6 +136,49 @@ export function addDays(dateStr: string, days: number): string {
 }
 
 /**
+ * Adds N working days to a start date (Day 0), skipping Sundays and any Freeze Days.
+ * Example (with no freeze days):
+ * - Day 0: 2026-11-27 (Fri) -> Day 4: 2026-12-02, Day 8: 2026-12-07, Day 14: 2026-12-14
+ */
+export function addWorkingDays(startDateStr: string, workingDays: number): string {
+  const normStart = normalizeToLocalDateStr(startDateStr) || getLocalTodayStr();
+  if (workingDays <= 0) {
+    return shiftDueDateOffRestDay(normStart);
+  }
+
+  let cursor = normStart;
+  let remaining = workingDays;
+  let guard = 0;
+
+  while (remaining > 0 && guard < 365) {
+    cursor = addDays(cursor, 1);
+    guard++;
+    if (!isLocalSunday(cursor) && !isDateFrozenDirect(cursor)) {
+      remaining--;
+    }
+  }
+
+  return cursor;
+}
+
+/**
+ * Calculates Day 4, Day 8, and Day 14 follow-up dates from a Day 0 start date
+ * using working days (skipping Sundays and any Freeze Days).
+ */
+export function calculateCadenceFollowupDates(day0DateStr: string): {
+  followup1Date: string;
+  followup2Date: string;
+  followup3Date: string;
+} {
+  const norm = normalizeToLocalDateStr(day0DateStr) || getLocalTodayStr();
+  return {
+    followup1Date: addWorkingDays(norm, 4),
+    followup2Date: addWorkingDays(norm, 8),
+    followup3Date: addWorkingDays(norm, 14),
+  };
+}
+
+/**
  * Returns integer days difference from today:
  * positive = in future, 0 = today, negative = in past (overdue)
  */
@@ -215,9 +254,13 @@ export function isLeadDismissedToday(lead: ChannelLead): boolean {
  */
 export function markInitialSent(lead: ChannelLead, sentDate = getLocalTodayStr()): ChannelLead {
   const normSentDate = normalizeToLocalDateStr(sentDate) || getLocalTodayStr();
-  const fu1 = addCadenceDays(normSentDate, 4);
-  const fu2 = addCadenceDays(normSentDate, 8);
-  const fu3 = addCadenceDays(normSentDate, 14);
+  const existingFu1 = normalizeToLocalDateStr(lead.followup1Date);
+  const existingFu2 = normalizeToLocalDateStr(lead.followup2Date);
+  const existingFu3 = normalizeToLocalDateStr(lead.followup3Date);
+  const calculated = calculateCadenceFollowupDates(normSentDate);
+  const fu1 = existingFu1 || calculated.followup1Date;
+  const fu2 = existingFu2 || calculated.followup2Date;
+  const fu3 = existingFu3 || calculated.followup3Date;
 
   const nowIso = new Date().toISOString();
 
@@ -433,9 +476,6 @@ export function getEffectiveInitialSentDate(lead: ChannelLead): string | null {
       normDispatchedAt ||
       normLastContact ||
       normFirstContact ||
-      normF1Date ||
-      normF2Date ||
-      normF3Date ||
       fuCount > 0 ||
       f1Sent ||
       f2Sent ||
@@ -448,12 +488,12 @@ export function getEffectiveInitialSentDate(lead: ChannelLead): string | null {
     return (
       normDmSentAt ||
       normFirstContact ||
-      (f1Sent ? subtractCadenceDays(f1Sent, 4) : null) ||
-      (f2Sent ? subtractCadenceDays(f2Sent, 8) : null) ||
-      (f3Sent ? subtractCadenceDays(f3Sent, 14) : null) ||
-      (normF1Date ? subtractCadenceDays(normF1Date, 4) : null) ||
-      (normF2Date ? subtractCadenceDays(normF2Date, 8) : null) ||
-      (normF3Date ? subtractCadenceDays(normF3Date, 14) : null) ||
+      (f1Sent ? addDays(f1Sent, -4) : null) ||
+      (f2Sent ? addDays(f2Sent, -8) : null) ||
+      (f3Sent ? addDays(f3Sent, -14) : null) ||
+      (normF1Date ? addDays(normF1Date, -4) : null) ||
+      (normF2Date ? addDays(normF2Date, -8) : null) ||
+      (normF3Date ? addDays(normF3Date, -14) : null) ||
       normDispatchDate ||
       normDispatchedAt ||
       normLastContact ||
@@ -467,9 +507,9 @@ export function getEffectiveInitialSentDate(lead: ChannelLead): string | null {
     normDispatchedAt ||
     normLastContact ||
     normFirstContact ||
-    (normF1Date ? subtractCadenceDays(normF1Date, 4) : null) ||
-    (normF2Date ? subtractCadenceDays(normF2Date, 8) : null) ||
-    (normF3Date ? subtractCadenceDays(normF3Date, 14) : null) ||
+    (normF1Date ? addDays(normF1Date, -4) : null) ||
+    (normF2Date ? addDays(normF2Date, -8) : null) ||
+    (normF3Date ? addDays(normF3Date, -14) : null) ||
     null
   );
 }
@@ -491,7 +531,6 @@ export function resolveLeadCadenceStep(
   lead: ChannelLead,
   today = getLocalTodayStr()
 ): ResolvedCadenceStep {
-  const normToday = normalizeToLocalDateStr(today) || getLocalTodayStr();
   const effectiveInitial = getEffectiveInitialSentDate(lead);
 
   if (
@@ -501,7 +540,7 @@ export function resolveLeadCadenceStep(
     lead.leadStatus === 'replied' ||
     lead.leadStatus === 'completed'
   ) {
-    const days = effectiveInitial ? getCadenceDaysElapsed(effectiveInitial, normToday) : 0;
+    const days = effectiveInitial ? Math.max(0, getDayDifference(today, effectiveInitial)) : 0;
     return {
       stageNumber: null,
       step: null,
@@ -545,7 +584,7 @@ export function resolveLeadCadenceStep(
   }
 
   if (fuCount >= 3) {
-    const days = effectiveInitial ? getCadenceDaysElapsed(effectiveInitial, normToday) : 14;
+    const days = effectiveInitial ? Math.max(0, getDayDifference(today, effectiveInitial)) : 14;
     return {
       stageNumber: null,
       step: null,
@@ -556,7 +595,7 @@ export function resolveLeadCadenceStep(
   }
 
   if (effectiveInitial) {
-    const rawDiff = getDayDifference(normToday, effectiveInitial);
+    const rawDiff = getDayDifference(today, effectiveInitial);
     if (rawDiff < 0) {
       return {
         stageNumber: null,
@@ -569,26 +608,20 @@ export function resolveLeadCadenceStep(
   }
 
   const daysSinceInitial = effectiveInitial
-    ? getCadenceDaysElapsed(effectiveInitial, normToday)
+    ? Math.max(0, getDayDifference(today, effectiveInitial))
     : fuCount === 0
     ? 4
     : fuCount === 1
     ? 8
     : 14;
 
-  // Sundays and Freeze Days never trigger follow-up touchpoints
-  if (isCadenceRestDay(normToday)) {
-    return {
-      stageNumber: null,
-      step: null,
-      daysSinceInitial,
-      effectiveInitialSentDate: effectiveInitial,
-      isFollowupDue: false,
-    };
-  }
+  const normF1Date = normalizeToLocalDateStr(lead.followup1Date);
+  const normF2Date = normalizeToLocalDateStr(lead.followup2Date);
+  const normF3Date = normalizeToLocalDateStr(lead.followup3Date);
 
-  // Day 14 = exact 14 active cadence days passed and followupCount <= 2
-  if (daysSinceInitial === 14 && fuCount <= 2) {
+  // Day 14 = explicit followup3Date match (when stored) OR exact 14 days passed, with followupCount <= 2
+  const isDay14Due = normF3Date ? today === normF3Date : daysSinceInitial === 14;
+  if (isDay14Due && fuCount <= 2) {
     return {
       stageNumber: 14,
       step: 3,
@@ -598,8 +631,9 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Day 8 = exact 8 active cadence days passed and followupCount <= 1
-  if (daysSinceInitial === 8 && fuCount <= 1) {
+  // Day 8 = explicit followup2Date match (when stored) OR exact 8 days passed, with followupCount <= 1
+  const isDay8Due = normF2Date ? today === normF2Date : daysSinceInitial === 8;
+  if (isDay8Due && fuCount <= 1) {
     return {
       stageNumber: 8,
       step: 2,
@@ -609,8 +643,9 @@ export function resolveLeadCadenceStep(
     };
   }
 
-  // Day 4 = exact 4 active cadence days passed and followupCount === 0
-  if (daysSinceInitial === 4 && fuCount === 0) {
+  // Day 4 = explicit followup1Date match (when stored) OR exact 4 days passed, with followupCount === 0
+  const isDay4Due = normF1Date ? today === normF1Date : daysSinceInitial === 4;
+  if (isDay4Due && fuCount === 0) {
     return {
       stageNumber: 4,
       step: 1,
@@ -671,7 +706,7 @@ export const isDay3FollowupDue = isDay4FollowupDue;
  */
 export function setDay3Reminder(lead: ChannelLead, daysAhead = 4): ChannelLead {
   const baseDate = getLeadBaseContactDate(lead);
-  const reminderDate = addCadenceDays(baseDate, daysAhead);
+  const reminderDate = addWorkingDays(baseDate, daysAhead);
   return {
     ...lead,
     followup1Date: reminderDate,
@@ -1220,9 +1255,13 @@ export function autoScheduleLeads(
     const emailOnly = isEmailOnlyLead(lead);
 
     if (assignments[lead.id]) {
+      const followupDates = calculateCadenceFollowupDates(assignments[lead.id]);
       return {
         ...lead,
         scheduledDate: assignments[lead.id],
+        followup1Date: followupDates.followup1Date,
+        followup2Date: followupDates.followup2Date,
+        followup3Date: followupDates.followup3Date,
         warmupStatus: emailOnly ? 'warmed' : (lead.warmupStatus || (lead.isWarmedUp ? 'warmed' : 'locked')),
         isWarmedUp: emailOnly ? true : lead.isWarmedUp,
         voiceType: assignedVoice,

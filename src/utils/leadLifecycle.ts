@@ -178,9 +178,6 @@ export function hasLeadSentHistory(lead: Partial<ChannelLead>): boolean {
       lead.followup1SentDate ||
       lead.followup2SentDate ||
       lead.followup3SentDate ||
-      lead.followup1Date ||
-      lead.followup2Date ||
-      lead.followup3Date ||
       lead.dispatchedAt ||
       lead.dispatchDate ||
       lead.dmSent ||

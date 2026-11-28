@@ -166,3 +166,45 @@ export async function loadChannelLeadsFromIdb<T = unknown>(
     return null;
   }
 }
+
+export async function saveInboxLeadsToIdb<T = unknown>(leads: T[]): Promise<void> {
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LEADS_BACKUP_STORE, 'readwrite');
+      const store = tx.objectStore(LEADS_BACKUP_STORE);
+      const request = store.put(
+        { updatedAt: new Date().toISOString(), leads },
+        'inbox_leads_v1'
+      );
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn('Failed to mirror inbox leads to IndexedDB:', err);
+  }
+}
+
+export async function loadInboxLeadsFromIdb<T = unknown>(): Promise<{ updatedAt: string; leads: T[] } | null> {
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LEADS_BACKUP_STORE, 'readonly');
+      const store = tx.objectStore(LEADS_BACKUP_STORE);
+      const request = store.get('inbox_leads_v1');
+      request.onsuccess = () => {
+        const val = request.result;
+        if (val && Array.isArray(val.leads)) {
+          resolve({ updatedAt: val.updatedAt || '', leads: val.leads as T[] });
+        } else {
+          resolve(null);
+        }
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn('Failed to read inbox leads backup from IndexedDB:', err);
+    return null;
+  }
+}
+

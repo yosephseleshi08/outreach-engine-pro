@@ -633,9 +633,20 @@ export const TodaysSchedulePage: React.FC<TodaysSchedulePageProps> = ({
     }
 
     const daysSinceSent = resolved.daysSinceInitial;
-    const isExactCadenceDay = daysSinceSent === 4 || daysSinceSent === 8 || daysSinceSent === 14;
+    if (resolved.stageNumber === 14) {
+      const explicitD14 = normalizeToLocalDateStr(lead.followup3Date);
+      return explicitD14 ? explicitD14 === todayStr : daysSinceSent === 14;
+    }
+    if (resolved.stageNumber === 8) {
+      const explicitD8 = normalizeToLocalDateStr(lead.followup2Date);
+      return explicitD8 ? explicitD8 === todayStr : daysSinceSent === 8;
+    }
+    if (resolved.stageNumber === 4) {
+      const explicitD4 = normalizeToLocalDateStr(lead.followup1Date);
+      return explicitD4 ? explicitD4 === todayStr : daysSinceSent === 4;
+    }
 
-    return isExactCadenceDay;
+    return false;
   };
 
   // Channel Specific Lists for Dedicated Modals (Sorted strictly D14 -> D8 -> D4 -> D0)
