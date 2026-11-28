@@ -70,6 +70,7 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -234,13 +235,17 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
     }
   };
 
-  // Batch Clear
+  // Batch Clear (uses in-app confirmation modal instead of window.confirm so it works inside iframes)
   const handleClearAll = () => {
-    if (window.confirm('Clear all pending leads from the Lead Inbox?')) {
-      clearAllInboxLeads();
-      setInboxLeads([]);
-      showToast('❌ Lead Inbox cleared.', 'reject');
-    }
+    if (inboxLeads.length === 0) return;
+    setShowClearConfirm(true);
+  };
+
+  const confirmClearAll = () => {
+    clearAllInboxLeads();
+    setInboxLeads([]);
+    setShowClearConfirm(false);
+    showToast('❌ Lead Inbox cleared.', 'reject');
   };
 
   // Copy Prompt
@@ -366,24 +371,25 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
         {/* Action Controls */}
         <div className="flex flex-wrap items-center gap-2.5">
           {inboxLeads.length > 1 && (
-            <>
-              <button
-                type="button"
-                onClick={handleAcceptAll}
-                className="px-3.5 py-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 hover:text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Accept All ({inboxLeads.length})</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleClearAll}
-                className="px-3 py-2.5 rounded-xl border border-white/10 bg-white/5 hover:bg-rose-500/20 hover:border-rose-500/30 hover:text-rose-300 text-slate-400 text-xs font-semibold transition cursor-pointer"
-                title="Clear all leads from inbox"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={handleAcceptAll}
+              className="px-3.5 py-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 hover:text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Accept All ({inboxLeads.length})</span>
+            </button>
+          )}
+          {inboxLeads.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearAll}
+              className="px-3 py-2.5 rounded-xl border border-rose-500/25 bg-rose-500/10 hover:bg-rose-500/20 hover:border-rose-500/40 text-rose-300 hover:text-white text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+              title="Delete all uploaded qualified leads from inbox"
+              aria-label="Delete all leads from inbox"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           )}
 
           {/* Mandatory Button: 📤 Upload Qualified Leads */}
@@ -709,6 +715,44 @@ export const LeadInboxView: React.FC<LeadInboxViewProps> = ({
           </>
         )}
       </div>
+      {/* In-App Confirmation Modal for Deleting All Inbox Leads */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-md rounded-3xl bg-slate-900 border border-rose-500/30 p-6 shadow-2xl space-y-5 text-slate-100">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-rose-400" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-lg font-black text-white font-['Outfit']">
+                  Delete All Inbox Leads?
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  This will remove all <strong className="text-rose-300">{inboxLeads.length}</strong> pending qualified lead{inboxLeads.length === 1 ? '' : 's'} from your Lead Inbox. Leads already accepted into Instagram or Combined Outreach will not be affected.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300 hover:text-white transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmClearAll}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-lg shadow-rose-600/30"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete All ({inboxLeads.length})</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

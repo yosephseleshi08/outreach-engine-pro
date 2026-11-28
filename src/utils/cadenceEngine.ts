@@ -2,10 +2,12 @@ import { ChannelLead, MultiChannelType } from '../types';
 import { getStrictVoiceTypeForId } from './voiceTypeEngine';
 import { getLeadInstagram, getLeadFacebook } from './channelStorage';
 import {
+  addCadenceDays,
   isLocalSunday,
   isDateFrozenDirect,
   shiftDueDateOffRestDay,
 } from './leadLifecycle';
+export { addCadenceDays };
 import { appendDispatchEntry, resolveLeadDispatchChannel } from './dispatchLog';
 import { lockObligationOnFirstDispatch } from './dailyObligation';
 
